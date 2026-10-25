@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.McpBridge" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/seed_blue</item>
+        <item name="colorOnPrimary">@color/seed_blue_on</item>
+        <item name="colorPrimaryContainer">@color/seed_blue_c</item>
+        <item name="colorOnPrimaryContainer">@color/seed_blue_oc</item>
+        <item name="colorSecondary">@color/seed_blue</item>
+        <item name="colorSecondaryContainer">@color/seed_blue_c</item>
+        <item name="colorOnSecondaryContainer">@color/seed_blue_oc</item>
+    </style>
+
+    <style name="Theme.McpBridge.Dyn" parent="Theme.Material3.DynamicColors.DayNight">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+    </style>
+
+    <style name="Theme.McpBridge.Blue" parent="Theme.McpBridge" />
+
+    <style name="Theme.McpBridge.Green" parent="Theme.McpBridge">
+        <item name="colorPrimary">@color/seed_green</item>
+        <item name="colorOnPrimary">@color/seed_green_on</item>
+        <item name="colorPrimaryContainer">@color/seed_green_c</item>
+        <item name="colorOnPrimaryContainer">@color/seed_green_oc</item>
+        <item name="colorSecondary">@color/seed_green</item>
+        <item name="colorSecondaryContainer">@color/seed_green_c</item>
+        <item name="colorOnSecondaryContainer">@color/seed_green_oc</item>
+    </style>
+
+    <style name="Theme.McpBridge.Purple" parent="Theme.McpBridge">
+        <item name="colorPrimary">@color/seed_purple</item>
+        <item name="colorOnPrimary">@color/seed_purple_on</item>
+        <item name="colorPrimaryContainer">@color/seed_purple_c</item>
+        <item name="colorOnPrimaryContainer">@color/seed_purple_oc</item>
+        <item name="colorSecondary">@color/seed_purple</item>
+        <item name="colorSecondaryContainer">@color/seed_purple_c</item>
+        <item name="colorOnSecondaryContainer">@color/seed_purple_oc</item>
+    </style>
+
+    <style name="Theme.McpBridge.Orange" parent="Theme.McpBridge">
+        <item name="colorPrimary">@color/seed_orange</item>
+        <item name="colorOnPrimary">@color/seed_orange_on</item>
+        <item name="colorPrimaryContainer">@color/seed_orange_c</item>
+        <item name="colorOnPrimaryContainer">@color/seed_orange_oc</item>
+        <item name="colorSecondary">@color/seed_orange</item>
+        <item name="colorSecondaryContainer">@color/seed_orange_c</item>
+        <item name="colorOnSecondaryContainer">@color/seed_orange_oc</item>
+    </style>
+
+    <style name="Theme.McpBridge.Pink" parent="Theme.McpBridge">
+        <item name="colorPrimary">@color/seed_pink</item>
+        <item name="colorOnPrimary">@color/seed_pink_on</item>
+        <item name="colorPrimaryContainer">@color/seed_pink_c</item>
+        <item name="colorOnPrimaryContainer">@color/seed_pink_oc</item>
+        <item name="colorSecondary">@color/seed_pink</item>
+        <item name="colorSecondaryContainer">@color/seed_pink_c</item>
+        <item name="colorOnSecondaryContainer">@color/seed_pink_oc</item>
+    </style>
+
+    <style name="Theme.McpBridge.Teal" parent="Theme.McpBridge">
+        <item name="colorPrimary">@color/seed_teal</item>
+        <item name="colorOnPrimary">@color/seed_teal_on</item>
+        <item name="colorPrimaryContainer">@color/seed_teal_c</item>
+        <item name="colorOnPrimaryContainer">@color/seed_teal_oc</item>
+        <item name="colorSecondary">@color/seed_teal</item>
+        <item name="colorSecondaryContainer">@color/seed_teal_c</item>
+        <item name="colorOnSecondaryContainer">@color/seed_teal_oc</item>
+    </style>
+
+</resources>

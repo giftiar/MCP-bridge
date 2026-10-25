@@ -1,0 +1,23 @@
+// 顶层构建文件：只声明仓库 + Android Gradle Plugin 版本，不引入任何第三方依赖库
+buildscript {
+    repositories {
+        // 国内镜像加速，取不到时会自动回落到 google() / mavenCentral()
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // Gradle 8.7 对应 AGP 8.6.x：AGP 8.6 要求 Gradle >= 8.7，官方支持 compileSdk 35
+        classpath 'com.android.tools.build:gradle:8.6.1'
+    }
+}
+
+allprojects {
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        google()
+        mavenCentral()
+    }
+}

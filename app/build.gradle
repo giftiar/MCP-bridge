@@ -1,0 +1,43 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'com.mcpmate.bridge'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.mcpmate.bridge"
+        minSdk 29
+        targetSdk 33
+        versionCode 10
+        versionName "0.1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    packaging {
+        resources {
+            excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE',
+                         'META-INF/LICENSE.txt', 'META-INF/NOTICE',
+                         'META-INF/NOTICE.txt', 'META-INF/AL2.0',
+                         'META-INF/LGPL2.1', 'META-INF/LICENSE.md',
+                         'META-INF/NOTICE.md']
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
+    implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:6.1'
+}

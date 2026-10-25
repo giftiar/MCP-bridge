@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MCP交互器</string>
+    <string name="a11y_label">MCP交互器</string>
+    <string name="a11y_desc">允许已连接的大模型读取屏幕内容并代为点击、输入、滑动、打开应用。</string>
+    <string name="unlock_label">MCP交互器 兼容模式</string>
+    <string name="unlock_desc">用于微信、夸克等限制了无障碍读取的应用。开启后这些应用的界面才能被正常读取。本服务本身不读取任何内容，只用于解除对方的限制。</string>
+</resources>

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <color name="seed_blue">#3F5F8F</color>
+    <color name="seed_blue_c">#D7E3F8</color>
+    <color name="seed_blue_on">#FFFFFF</color>
+    <color name="seed_blue_oc">#141C2B</color>
+
+    <color name="seed_green">#3D6B4A</color>
+    <color name="seed_green_c">#C6EBCF</color>
+    <color name="seed_green_on">#FFFFFF</color>
+    <color name="seed_green_oc">#08200F</color>
+
+    <color name="seed_purple">#63558C</color>
+    <color name="seed_purple_c">#E7DEFF</color>
+    <color name="seed_purple_on">#FFFFFF</color>
+    <color name="seed_purple_oc">#1B1136</color>
+
+    <color name="seed_orange">#8A5A2B</color>
+    <color name="seed_orange_c">#FFDCC0</color>
+    <color name="seed_orange_on">#FFFFFF</color>
+    <color name="seed_orange_oc">#2D1600</color>
+
+    <color name="seed_pink">#8B4A5E</color>
+    <color name="seed_pink_c">#FFD9E2</color>
+    <color name="seed_pink_on">#FFFFFF</color>
+    <color name="seed_pink_oc">#3A0719</color>
+
+    <color name="seed_teal">#2F6666</color>
+    <color name="seed_teal_c">#BCEBEB</color>
+    <color name="seed_teal_on">#FFFFFF</color>
+    <color name="seed_teal_oc">#002020</color>
+
+    <color name="ok_green">#2E7D32</color>
+    <color name="warn_amber">#ED6C02</color>
+    <color name="err_red">#C62828</color>
+
+</resources>
