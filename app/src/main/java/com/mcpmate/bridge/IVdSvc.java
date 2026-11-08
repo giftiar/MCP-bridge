@@ -53,8 +53,6 @@ public interface IVdSvc extends IInterface {
 
     String info() throws RemoteException;
 
-    String shell(String cmd) throws RemoteException;
-
     String rotate(int orientation) throws RemoteException;
 
     void registerClient(IBinder client) throws RemoteException;
@@ -66,6 +64,12 @@ public interface IVdSvc extends IInterface {
     String activateIme() throws RemoteException;
 
     String deactivateIme() throws RemoteException;
+
+    String touchDown(int x, int y) throws RemoteException;
+
+    String touchMove(int x, int y) throws RemoteException;
+
+    String touchUp(int x, int y) throws RemoteException;
 
 
     abstract class Stub extends Binder implements IVdSvc {
@@ -89,6 +93,9 @@ public interface IVdSvc extends IInterface {
         private static final int T_KILLALL = 17;
         private static final int T_IME_ON = 18;
         private static final int T_IME_OFF = 19;
+        private static final int T_DOWN = 20;
+        private static final int T_MOVE = 21;
+        private static final int T_UP = 22;
 
         public Stub() {
             attachInterface(this, DESCRIPTOR);
@@ -226,14 +233,6 @@ public interface IVdSvc extends IInterface {
                     reply.writeString(info());
                     return true;
 
-                case T_SHELL: {
-                    data.enforceInterface(DESCRIPTOR);
-                    String cmd = data.readString();
-                    reply.writeNoException();
-                    reply.writeString(shell(cmd));
-                    return true;
-                }
-
                 case T_ROTATE: {
                     data.enforceInterface(DESCRIPTOR);
                     int o = data.readInt();
@@ -272,6 +271,24 @@ public interface IVdSvc extends IInterface {
                     data.enforceInterface(DESCRIPTOR);
                     reply.writeNoException();
                     reply.writeString(deactivateIme());
+                    return true;
+
+                case T_DOWN:
+                    data.enforceInterface(DESCRIPTOR);
+                    reply.writeNoException();
+                    reply.writeString(touchDown(data.readInt(), data.readInt()));
+                    return true;
+
+                case T_MOVE:
+                    data.enforceInterface(DESCRIPTOR);
+                    reply.writeNoException();
+                    reply.writeString(touchMove(data.readInt(), data.readInt()));
+                    return true;
+
+                case T_UP:
+                    data.enforceInterface(DESCRIPTOR);
+                    reply.writeNoException();
+                    reply.writeString(touchUp(data.readInt(), data.readInt()));
                     return true;
             }
             return super.onTransact(code, data, reply, flags);
@@ -431,13 +448,6 @@ public interface IVdSvc extends IInterface {
         }
 
         @Override
-        public String shell(String cmd) throws RemoteException {
-            Parcel d = head();
-            d.writeString(cmd);
-            return str(T_SHELL_CONST, d);
-        }
-
-        @Override
         public String rotate(int orientation) throws RemoteException {
             Parcel d = head();
             d.writeInt(orientation);
@@ -478,6 +488,30 @@ public interface IVdSvc extends IInterface {
             return str(T_IME_OFF_CONST, head());
         }
 
+        @Override
+        public String touchDown(int x, int y) throws RemoteException {
+            Parcel d = head();
+            d.writeInt(x);
+            d.writeInt(y);
+            return str(T_DOWN_CONST, d);
+        }
+
+        @Override
+        public String touchMove(int x, int y) throws RemoteException {
+            Parcel d = head();
+            d.writeInt(x);
+            d.writeInt(y);
+            return str(T_MOVE_CONST, d);
+        }
+
+        @Override
+        public String touchUp(int x, int y) throws RemoteException {
+            Parcel d = head();
+            d.writeInt(x);
+            d.writeInt(y);
+            return str(T_UP_CONST, d);
+        }
+
 
         private static final int T_PING_CONST = 1;
         private static final int T_CREATE_CONST = 2;
@@ -498,5 +532,8 @@ public interface IVdSvc extends IInterface {
         private static final int T_KILLALL_CONST = 17;
         private static final int T_IME_ON_CONST = 18;
         private static final int T_IME_OFF_CONST = 19;
+        private static final int T_DOWN_CONST = 20;
+        private static final int T_MOVE_CONST = 21;
+        private static final int T_UP_CONST = 22;
     }
 }

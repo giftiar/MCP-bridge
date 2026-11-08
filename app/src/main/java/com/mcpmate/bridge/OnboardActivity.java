@@ -166,7 +166,6 @@ public class OnboardActivity extends Activity {
                     mustCalibrate();
                     return;
                 }
-                Config.setOnboarded(true);
                 Setup.mark(OnboardActivity.this);
                 goMain();
             }
@@ -248,10 +247,6 @@ public class OnboardActivity extends Activity {
         if (!StopBar.canDraw(this)) {
             return;
         }
-        if (!Config.isBallOn()) {
-            Config.setBallOn(true);
-            Log.add("检测到悬浮窗权限，已自动开启急停悬浮球");
-        }
         if (!StopBar.isShown()) {
             StopBar.show(this);
         }
@@ -260,9 +255,6 @@ public class OnboardActivity extends Activity {
     private boolean emergencyReady() {
         if (!StopBar.canDraw(this)) {
             return false;
-        }
-        if (!Config.isBallOn()) {
-            Config.setBallOn(true);
         }
         if (!StopBar.isShown()) {
             StopBar.show(this);
@@ -348,10 +340,10 @@ public class OnboardActivity extends Activity {
 
             String m;
             int c;
-            if (Config.isBallOn() && StopBar.isShown()) {
+            if (StopBar.isShown()) {
                 m = "已开启";
                 c = 0xFF2E7D32;
-            } else if (Config.isBallOn() && StopBar.canDraw(this)) {
+            } else if (StopBar.canDraw(this)) {
                 m = "待启动";
                 c = 0xFFF57C00;
             } else {
@@ -376,7 +368,17 @@ public class OnboardActivity extends Activity {
             if (s == null) {
                 return false;
             }
-            return s.toLowerCase().contains(getPackageName().toLowerCase());
+            String full = getPackageName() + "/" + A11ySvc.class.getName();
+            for (String one : s.split(":")) {
+                String v = one.trim();
+                if (v.equalsIgnoreCase(full)) {
+                    return true;
+                }
+                if (v.equalsIgnoreCase(getPackageName() + "/.A11ySvc")) {
+                    return true;
+                }
+            }
+            return false;
         } catch (Throwable t) {
             return false;
         }
@@ -425,7 +427,6 @@ public class OnboardActivity extends Activity {
     }
 
     private void enableBall() {
-        Config.setBallOn(true);
         if (!StopBar.canDraw(this)) {
             mustCalibrate();
             return;

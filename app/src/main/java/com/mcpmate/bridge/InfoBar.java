@@ -226,8 +226,7 @@ public class InfoBar {
             attachTouch(app, box);
 
             int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                    | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
             int type = Build.VERSION.SDK_INT >= 26
                     ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                     : WindowManager.LayoutParams.TYPE_PHONE;
@@ -270,13 +269,22 @@ public class InfoBar {
                         moved = true;
                     }
                     if (moved && lp != null && wm != null && root != null) {
+                        int[] sz = StopBar.realSize(app);
+                        int maxX = Math.max(0, sz[0] - lp.width);
+                        int maxY = Math.max(0, sz[1] - lp.height);
                         lp.x -= dx;
                         lp.y += dy;
                         if (lp.x < 0) {
                             lp.x = 0;
                         }
+                        if (lp.x > maxX) {
+                            lp.x = maxX;
+                        }
                         if (lp.y < 0) {
                             lp.y = 0;
+                        }
+                        if (lp.y > maxY) {
+                            lp.y = maxY;
                         }
                         touchX = (int) e.getRawX();
                         touchY = (int) e.getRawY();

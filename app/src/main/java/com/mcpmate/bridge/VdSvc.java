@@ -21,7 +21,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
-import android.graphics.Point;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.media.Image;
@@ -49,13 +48,20 @@ import java.util.List;
 
 public class VdSvc extends IVdSvc.Stub {
 
+    // 0 means no VIRTUAL_DISPLAY_FLAG_PUBLIC, which is a private display.
+    // Do not change this to 1: public displays require CAPTURE_VIDEO_OUTPUT,
+    // which is reserved for system components and throws SecurityException here.
     private static final int FLAG_PRIVATE = 0;
+    private static final long FRAME_MIN_GAP = 45L;
     private static final int MODE_ASYNC = 0;
-    private static final int MODE_WAIT_FOR_RESULT = 1;
-    private static final int MODE_WAIT_FOR_FINISH = 2;
-    private static volatile int injectMode = MODE_WAIT_FOR_FINISH;
+    private static final int injectMode = MODE_ASYNC;
     private static volatile int injectUsable = -1;
     private static final int LONG_PRESS_MS = 800;
+
+    private static final Object GESTURE = new Object();
+    private static final int G_FAIL = 0;
+    private static final int G_OK = 1;
+    private static final int G_STUCK = 2;
 
     private static Context appCtx;
     private static Object inputMgr;
@@ -73,10 +79,20 @@ public class VdSvc extends IVdSvc.Stub {
     private volatile Bitmap latest;
     private volatile long lastFrameAt;
     private volatile String name = "";
-    private int w;
-    private int h;
-    private int dpi;
-    private int displayId = -1;
+    private volatile Thread orientThread;
+    private volatile int curRotation = 0;
+    private volatile int curLogicalW = 0;
+    private volatile int curLogicalH = 0;
+    private final java.util.concurrent.atomic.AtomicInteger frameUsers =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+    private final Object frameLock = new Object();
+    private volatile long lastBuildAt = 0L;
+    private static int[] pixBuf;
+    private static byte[] rowBuf;
+    private volatile int w;
+    private volatile int h;
+    private volatile int dpi;
+    private volatile int displayId = -1;
 
     public VdSvc() {
         startUid = android.os.Process.myUid();
@@ -85,6 +101,42 @@ public class VdSvc extends IVdSvc.Stub {
         } catch (Throwable ignored) {
         }
         dropNote = dropToShell();
+        healIme();
+    }
+
+    private static void healIme() {
+        try {
+            String cur = exec("settings get secure default_input_method").trim();
+            if (!IME_ID.equals(cur)) {
+                return;
+            }
+            String back = exec("cat " + IME_BACKUP + " 2>/dev/null").trim();
+            if (back.length() == 0 || "null".equals(back) || IME_ID.equals(back)) {
+                back = pickOtherIme();
+            }
+            if (back.length() == 0) {
+                dropNote = dropNote + " ime_stuck";
+                return;
+            }
+            exec("ime set " + back);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String pickOtherIme() {
+        try {
+            String out = exec("ime list -s");
+            String[] lines = out.split("\n");
+            for (String l : lines) {
+                String s = l.trim();
+                if (s.length() == 0 || IME_ID.equals(s) || s.indexOf('/') < 0) {
+                    continue;
+                }
+                return s;
+            }
+        } catch (Throwable ignored) {
+        }
+        return "";
     }
 
     private static String dropToShell() {
@@ -161,6 +213,51 @@ public class VdSvc extends IVdSvc.Stub {
             readerThread.start();
         }
         return new Handler(readerThread.getLooper());
+    }
+
+    private void attachReader(ImageReader target, final int cw, final int ch) {
+        target.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+            public void onImageAvailable(ImageReader ir) {
+                Image img = null;
+                try {
+                    img = ir.acquireLatestImage();
+                    if (img == null) {
+                        return;
+                    }
+                    if (frameUsers.get() <= 0) {
+                        return;
+                    }
+                    long now = SystemClock.uptimeMillis();
+                    if (now - lastBuildAt < FRAME_MIN_GAP) {
+                        return;
+                    }
+                    lastBuildAt = now;
+                    Bitmap bmp = toBitmap(img, cw, ch);
+                    if (bmp == null) {
+                        return;
+                    }
+                    synchronized (frameLock) {
+                        Bitmap old = latest;
+                        latest = bmp;
+                        lastFrameAt = SystemClock.uptimeMillis();
+                        if (old != null) {
+                            try {
+                                old.recycle();
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {
+                } finally {
+                    if (img != null) {
+                        try {
+                            img.close();
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            }
+        }, readerHandler());
     }
 
     private static synchronized Context app() {
@@ -337,8 +434,9 @@ public class VdSvc extends IVdSvc.Stub {
         b.append("input=").append(input() == null ? "null" : "ok").append('\n');
         b.append("client=").append(clientNote).append('\n');
         b.append("selinux=").append(selinux()).append('\n');
-        b.append("drop=").append(dropNote).append('\n');
-        b.append("inject=").append(injectUsable == 1 ? "on" : "off").append('\n');
+        b.append("inject=").append(injectUsable == 1 ? "ok"
+                : injectUsable == 0 ? "failed" : "untried")
+                .append(" mode=").append(injectMode).append('\n');
         return b.toString();
     }
 
@@ -389,47 +487,16 @@ public class VdSvc extends IVdSvc.Stub {
             h = height;
             dpi = density;
             displayId = d.getDisplayId();
+            lastBuildAt = 0L;
             latest = null;
             lastFrameAt = 0L;
 
-            final int cw = width;
-            final int ch = height;
-            r.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
-                public void onImageAvailable(ImageReader ir) {
-                    Image img = null;
-                    try {
-                        img = ir.acquireLatestImage();
-                        if (img != null) {
-                            Bitmap bmp = toBitmap(img, cw, ch);
-                            if (bmp != null) {
-                                Bitmap old = latest;
-                                latest = bmp;
-                                lastFrameAt = SystemClock.uptimeMillis();
-                                if (old != null) {
-                                    try {
-                                        old.recycle();
-                                    } catch (Throwable ignored) {
-                                    }
-                                }
-                            }
-                        }
-                    } catch (Throwable ignored) {
-                    } finally {
-                        if (img != null) {
-                            try {
-                                img.close();
-                            } catch (Throwable ignored) {
-                            }
-                        }
-                    }
-                }
-            }, readerHandler());
+            attachReader(r, width, height);
 
             startOrientationWatch();
             injectUsable = -1;
-            probeInject();
             return "OK id=" + displayId + " " + width + "x" + height + "@" + density
-                    + " inject=" + (injectUsable == 1 ? "on" : "off") + "(" + injectMode + ")";
+                    + " inject=async mode=" + injectMode;
         } catch (Throwable t) {
             if (r != null) {
                 try {
@@ -449,7 +516,28 @@ public class VdSvc extends IVdSvc.Stub {
         reader = null;
         vd = null;
         displayId = -1;
-        latest = null;
+        orientThread = null;
+        synchronized (VdSvc.class) {
+            HandlerThread rt = readerThread;
+            readerThread = null;
+            if (rt != null) {
+                try {
+                    rt.quitSafely();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        Bitmap lb;
+        synchronized (frameLock) {
+            lb = latest;
+            latest = null;
+        }
+        if (lb != null) {
+            try {
+                lb.recycle();
+            } catch (Throwable ignored) {
+            }
+        }
 
         if (r != null) {
             try {
@@ -480,33 +568,52 @@ public class VdSvc extends IVdSvc.Stub {
             return "FAIL no context";
         }
         String comp = null;
+        int screenOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
         try {
-            Intent launch = c.getPackageManager().getLaunchIntentForPackage(pkg);
+            android.content.pm.PackageManager pm = c.getPackageManager();
+            Intent launch = pm.getLaunchIntentForPackage(pkg);
             if (launch == null) {
                 return "FAIL no launcher for " + pkg;
             }
             android.content.ComponentName cn = launch.getComponent();
             if (cn == null) {
-                cn = launch.resolveActivity(c.getPackageManager());
+                cn = launch.resolveActivity(pm);
             }
             if (cn == null) {
                 return "FAIL no component for " + pkg;
             }
             comp = cn.flattenToShortString();
+            try {
+                android.content.pm.ActivityInfo ai = pm.getActivityInfo(cn, 0);
+                if (ai != null) {
+                    screenOrientation = ai.screenOrientation;
+                }
+            } catch (Throwable ignored) {
+            }
         } catch (Throwable t) {
             return "FAIL resolve " + t;
+        }
+
+        String twist = "";
+        if (Disp.isLandscapeOrientation(screenOrientation) && w < h) {
+            twist = " rotate=" + rotate(1);
+            sleep(400);
+        } else if (Disp.isPortraitOrientation(screenOrientation) && w > h) {
+            twist = " rotate=" + rotate(0);
+            sleep(400);
         }
 
         String out = exec("am start --display " + displayId
                 + " --user current -n " + comp);
         sleep(1200);
-        return "OK " + comp + (out.length() == 0 ? "" : " | " + out);
+        return "OK " + comp
+                + " orient=" + Disp.orientationText(screenOrientation)
+                + " size=" + w + "x" + h
+                + twist
+                + (out.length() == 0 ? "" : " | " + out);
     }
 
     private boolean send(InputEvent ev) {
-        if (injectUsable == 0) {
-            return false;
-        }
         Object im = input();
         if (im == null || mInjectPlain == null) {
             injectUsable = 0;
@@ -523,9 +630,7 @@ public class VdSvc extends IVdSvc.Stub {
         try {
             Object r = mInjectPlain.invoke(im, ev, injectMode);
             boolean ok = Boolean.TRUE.equals(r);
-            if (!ok) {
-                injectUsable = 0;
-            }
+            injectUsable = ok ? 1 : 0;
             return ok;
         } catch (Throwable t) {
             injectUsable = 0;
@@ -533,54 +638,23 @@ public class VdSvc extends IVdSvc.Stub {
         }
     }
 
-    private void probeInject() {
-        if (injectUsable == 0 || displayId <= 0) {
-            return;
-        }
-        if (injectUsable == 1) {
-            return;
-        }
-        int cx = w / 2;
-        int cy = h / 2;
-        long d = SystemClock.uptimeMillis();
-        MotionEvent ev = MotionEvent.obtain(d, d, MotionEvent.ACTION_DOWN,
-                cx, cy, 1f, 1f, 0, 1f, 1f, 0, 0);
-        ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        try {
-            Object im = input();
-            if (im == null || mInjectPlain == null) {
-                injectUsable = 0;
-                return;
-            }
-            if (displayId > 0 && mSetDisplayId != null) {
-                try {
-                    mSetDisplayId.invoke(ev, displayId);
-                } catch (Throwable ignored) {
-                }
-            }
-            Object r = mInjectPlain.invoke(im, ev, injectMode);
-            injectUsable = Boolean.TRUE.equals(r) ? 1 : 0;
-        } catch (Throwable t) {
-            injectUsable = 0;
-        } finally {
-            ev.recycle();
-        }
-        MotionEvent up = MotionEvent.obtain(d, SystemClock.uptimeMillis(),
-                MotionEvent.ACTION_CANCEL, cx, cy, 0f, 1f, 0, 1f, 1f, 0, 0);
-        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        try {
-            send(up);
-        } catch (Throwable ignored) {
-        } finally {
-            up.recycle();
-        }
-    }
-
     private boolean touch(int x, int y, int action, long downTime) {
-        float pressure = action == MotionEvent.ACTION_UP ? 0f : 1f;
+        MotionEvent.PointerProperties pp = new MotionEvent.PointerProperties();
+        pp.id = 0;
+        pp.toolType = MotionEvent.TOOL_TYPE_FINGER;
+
+        MotionEvent.PointerCoords pc = new MotionEvent.PointerCoords();
+        pc.x = x;
+        pc.y = y;
+        pc.pressure = action == MotionEvent.ACTION_UP ? 0f : 1f;
+        pc.size = 1f;
+
         MotionEvent ev = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(),
-                action, x, y, pressure, 1f, 0, 1f, 1f, 0, 0);
-        ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                action, 1,
+                new MotionEvent.PointerProperties[]{pp},
+                new MotionEvent.PointerCoords[]{pc},
+                0, 0, 1f, 1f, 0, 0,
+                InputDevice.SOURCE_TOUCHSCREEN, 0);
         try {
             return send(ev);
         } finally {
@@ -588,10 +662,143 @@ public class VdSvc extends IVdSvc.Stub {
         }
     }
 
+    private volatile long utouchDown = 0L;
+
+    @Override
+    public String touchDown(int x, int y) {
+        if (displayId <= 0) {
+            return "FAIL no display";
+        }
+        String ofb = bounds(x, y);
+        if (ofb != null) {
+            return ofb;
+        }
+        synchronized (GESTURE) {
+            utouchDown = SystemClock.uptimeMillis();
+            if (!touch(x, y, MotionEvent.ACTION_DOWN, utouchDown)) {
+                utouchDown = 0L;
+                return "FAIL inject refused down " + x + "," + y
+                        + "\nthe system rejected the touch event. check that Shizuku "
+                        + "runs as shell (uid 2000) and that the display is still alive.";
+            }
+        }
+        return "OK down " + x + "," + y;
+    }
+
+    @Override
+    public String touchMove(int x, int y) {
+        if (displayId <= 0) {
+            return "FAIL no display";
+        }
+        synchronized (GESTURE) {
+            if (utouchDown == 0L) {
+                return "FAIL no active down";
+            }
+            if (!touch(x, y, MotionEvent.ACTION_MOVE, utouchDown)) {
+                return "FAIL inject refused move " + x + "," + y;
+            }
+        }
+        return "OK move " + x + "," + y;
+    }
+
+    @Override
+    public String touchUp(int x, int y) {
+        if (displayId <= 0) {
+            return "FAIL no display";
+        }
+        boolean ok;
+        synchronized (GESTURE) {
+            if (utouchDown == 0L) {
+                return "FAIL no active down";
+            }
+            ok = touch(x, y, MotionEvent.ACTION_UP, utouchDown);
+            utouchDown = 0L;
+        }
+        if (!ok) {
+            return "FAIL inject refused up " + x + "," + y;
+        }
+        return "OK up " + x + "," + y;
+    }
+
+    private int tapAt(int x, int y, long holdMs) {
+        long down = SystemClock.uptimeMillis();
+        if (!touch(x, y, MotionEvent.ACTION_DOWN, down)) {
+            return G_FAIL;
+        }
+        if (holdMs > 0) {
+            sleep(holdMs);
+        }
+        if (touch(x, y, MotionEvent.ACTION_UP, down)) {
+            return G_OK;
+        }
+        touch(x, y, MotionEvent.ACTION_CANCEL, down);
+        return G_STUCK;
+    }
+
+    private int pathAt(int x1, int y1, int x2, int y2,
+                       int holdMs, int durationMs, int minSteps) {
+        long down = SystemClock.uptimeMillis();
+        if (!touch(x1, y1, MotionEvent.ACTION_DOWN, down)) {
+            return G_FAIL;
+        }
+        if (holdMs > 0) {
+            sleep(holdMs);
+        }
+        int steps = Math.max(minSteps, durationMs / 16);
+        long startAt = SystemClock.uptimeMillis();
+        for (int i = 1; i <= steps; i++) {
+            float f = (float) i / steps;
+            float e = f * f * (3f - 2f * f);
+            int cx = Math.round(x1 + (x2 - x1) * e);
+            int cy = Math.round(y1 + (y2 - y1) * e);
+            touch(cx, cy, MotionEvent.ACTION_MOVE, down);
+            long target = startAt + (long) durationMs * i / steps;
+            long wait = target - SystemClock.uptimeMillis();
+            if (wait > 0) {
+                sleep(wait);
+            }
+        }
+        if (touch(x2, y2, MotionEvent.ACTION_UP, down)) {
+            return G_OK;
+        }
+        touch(x2, y2, MotionEvent.ACTION_CANCEL, down);
+        return G_STUCK;
+    }
+
+    private String stuckMsg(String what, int x, int y) {
+        return "FAIL " + what + " " + x + "," + y
+                + "\nthe button up event was refused, so the display may still think a "
+                + "finger is down. a cancel event was sent as compensation.\n"
+                + "do not retry blindly: call vd_rotate once to reset the touch state, "
+                + "then ocr and try again.";
+    }
+
+    private String fallbackTap(int x, int y) {
+        String out = exec("input -d " + displayId + " tap " + x + " " + y);
+        if (out.length() > 0) {
+            return "FAIL tap " + x + "," + y + " | " + out;
+        }
+        return "OK tap " + x + "," + y
+                + "\nnote: injected events were refused, this used the input command "
+                + "and its result cannot be verified";
+    }
+
+    private String bounds(int x, int y) {
+        if (x < 0 || y < 0 || x >= w || y >= h) {
+            return "ERROR: point " + x + "," + y + " is outside the display "
+                    + w + "x" + h + ". call ocr first and use a coordinate from its result.";
+        }
+        return null;
+    }
+
     @Override
     public String click(int x, int y, int holdMs) {
         if (displayId <= 0) {
             return "FAIL no display";
+        }
+        String ofb = bounds(x, y);
+        if (ofb != null) {
+            return ofb;
         }
         if (holdMs < 30) {
             holdMs = 30;
@@ -599,18 +806,17 @@ public class VdSvc extends IVdSvc.Stub {
         if (holdMs > 400) {
             holdMs = 400;
         }
-        long down = SystemClock.uptimeMillis();
-        boolean a = touch(x, y, MotionEvent.ACTION_DOWN, down);
-        sleep(holdMs);
-        boolean b = touch(x, y, MotionEvent.ACTION_UP, down);
-        if (a || b) {
+        int g;
+        synchronized (GESTURE) {
+            g = tapAt(x, y, holdMs);
+        }
+        if (g == G_OK) {
             return "OK tap " + x + "," + y;
         }
-        String out = exec("input -d " + displayId + " tap " + x + " " + y);
-        if (out.length() > 0) {
-            return "FAIL tap " + x + "," + y + " | " + out;
+        if (g == G_STUCK) {
+            return stuckMsg("tap", x, y);
         }
-        return "OK tap " + x + "," + y;
+        return fallbackTap(x, y);
     }
 
     @Override
@@ -618,25 +824,41 @@ public class VdSvc extends IVdSvc.Stub {
         if (displayId <= 0) {
             return "FAIL no display";
         }
-        long down = SystemClock.uptimeMillis();
-        boolean a = touch(x, y, MotionEvent.ACTION_DOWN, down);
-        sleep(LONG_PRESS_MS);
-        boolean b = touch(x, y, MotionEvent.ACTION_UP, down);
-        if (a || b) {
+        String ofb = bounds(x, y);
+        if (ofb != null) {
+            return ofb;
+        }
+        int g;
+        synchronized (GESTURE) {
+            g = tapAt(x, y, LONG_PRESS_MS);
+        }
+        if (g == G_OK) {
             return "OK long " + x + "," + y;
+        }
+        if (g == G_STUCK) {
+            return stuckMsg("long press", x, y);
         }
         String out = exec("input -d " + displayId + " swipe " + x + " " + y
                 + " " + x + " " + y + " " + LONG_PRESS_MS);
         if (out.length() > 0) {
             return "FAIL long " + x + "," + y + " | " + out;
         }
-        return "OK long " + x + "," + y;
+        return "OK long " + x + "," + y
+                + "\nnote: injected events were refused, this used the input command "
+                + "and its result cannot be verified";
     }
 
     @Override
     public String drag(int x1, int y1, int x2, int y2, int holdMs, int durationMs) {
         if (displayId <= 0) {
             return "FAIL no display";
+        }
+        String ofb = bounds(x1, y1);
+        if (ofb == null) {
+            ofb = bounds(x2, y2);
+        }
+        if (ofb != null) {
+            return ofb;
         }
         if (holdMs < LONG_PRESS_MS) {
             holdMs = LONG_PRESS_MS;
@@ -645,35 +867,24 @@ public class VdSvc extends IVdSvc.Stub {
             durationMs = 200;
         }
 
-        long down = SystemClock.uptimeMillis();
-        boolean a = touch(x1, y1, MotionEvent.ACTION_DOWN, down);
-        sleep(holdMs);
-
-        int steps = Math.max(10, durationMs / 16);
-        long startAt = SystemClock.uptimeMillis();
-        for (int i = 1; i <= steps; i++) {
-            float f = (float) i / steps;
-            float e = f * f * (3f - 2f * f);
-            int cx = Math.round(x1 + (x2 - x1) * e);
-            int cy = Math.round(y1 + (y2 - y1) * e);
-            touch(cx, cy, MotionEvent.ACTION_MOVE, down);
-            long target = startAt + (long) durationMs * i / steps;
-            long wait = target - SystemClock.uptimeMillis();
-            if (wait > 0) {
-                sleep(wait);
-            }
+        int g;
+        synchronized (GESTURE) {
+            g = pathAt(x1, y1, x2, y2, holdMs, durationMs, 10);
         }
-        touch(x2, y2, MotionEvent.ACTION_UP, down);
-
-        if (a) {
+        if (g == G_OK) {
             return "OK drag " + x1 + "," + y1 + " -> " + x2 + "," + y2;
+        }
+        if (g == G_STUCK) {
+            return stuckMsg("drag", x2, y2);
         }
         String out = exec("input -d " + displayId + " swipe " + x1 + " " + y1
                 + " " + x2 + " " + y2 + " " + (holdMs + durationMs));
         if (out.length() > 0) {
             return "FAIL drag | " + out;
         }
-        return "OK drag " + x1 + "," + y1 + " -> " + x2 + "," + y2;
+        return "OK drag " + x1 + "," + y1 + " -> " + x2 + "," + y2
+                + "\nnote: injected events were refused, this used the input command "
+                + "and its result cannot be verified";
     }
 
     @Override
@@ -681,37 +892,34 @@ public class VdSvc extends IVdSvc.Stub {
         if (displayId <= 0) {
             return "FAIL no display";
         }
+        String ofb = bounds(x1, y1);
+        if (ofb == null) {
+            ofb = bounds(x2, y2);
+        }
+        if (ofb != null) {
+            return ofb;
+        }
         if (durationMs < 100) {
             durationMs = 100;
         }
-        long down = SystemClock.uptimeMillis();
-        boolean a = touch(x1, y1, MotionEvent.ACTION_DOWN, down);
-
-        int steps = Math.max(8, durationMs / 16);
-        long startAt = SystemClock.uptimeMillis();
-        for (int i = 1; i <= steps; i++) {
-            float f = (float) i / steps;
-            float e = f * f * (3f - 2f * f);
-            int cx = Math.round(x1 + (x2 - x1) * e);
-            int cy = Math.round(y1 + (y2 - y1) * e);
-            touch(cx, cy, MotionEvent.ACTION_MOVE, down);
-            long target = startAt + (long) durationMs * i / steps;
-            long wait = target - SystemClock.uptimeMillis();
-            if (wait > 0) {
-                sleep(wait);
-            }
+        int g;
+        synchronized (GESTURE) {
+            g = pathAt(x1, y1, x2, y2, 0, durationMs, 8);
         }
-        touch(x2, y2, MotionEvent.ACTION_UP, down);
-
-        if (a) {
+        if (g == G_OK) {
             return "OK swipe " + x1 + "," + y1 + " -> " + x2 + "," + y2;
+        }
+        if (g == G_STUCK) {
+            return stuckMsg("swipe", x2, y2);
         }
         String out = exec("input -d " + displayId + " swipe " + x1 + " " + y1
                 + " " + x2 + " " + y2 + " " + durationMs);
         if (out.length() > 0) {
             return "FAIL swipe | " + out;
         }
-        return "OK swipe " + x1 + "," + y1 + " -> " + x2 + "," + y2;
+        return "OK swipe " + x1 + "," + y1 + " -> " + x2 + "," + y2
+                + "\nnote: injected events were refused, this used the input command "
+                + "and its result cannot be verified";
     }
 
     @Override
@@ -719,24 +927,30 @@ public class VdSvc extends IVdSvc.Stub {
         if (displayId <= 0) {
             return "FAIL no display";
         }
-        long down = SystemClock.uptimeMillis();
-        KeyEvent kd = new KeyEvent(down, SystemClock.uptimeMillis(),
-                KeyEvent.ACTION_DOWN, keycode, 0);
-        kd.setSource(InputDevice.SOURCE_KEYBOARD);
-        boolean a = send(kd);
-        sleep(30);
-        KeyEvent ku = new KeyEvent(down, SystemClock.uptimeMillis(),
-                KeyEvent.ACTION_UP, keycode, 0);
-        ku.setSource(InputDevice.SOURCE_KEYBOARD);
-        boolean b = send(ku);
-        if (a || b) {
+        boolean a;
+        boolean b;
+        synchronized (GESTURE) {
+            long down = SystemClock.uptimeMillis();
+            KeyEvent kd = new KeyEvent(down, SystemClock.uptimeMillis(),
+                    KeyEvent.ACTION_DOWN, keycode, 0);
+            kd.setSource(InputDevice.SOURCE_KEYBOARD);
+            a = send(kd);
+            sleep(30);
+            KeyEvent ku = new KeyEvent(down, SystemClock.uptimeMillis(),
+                    KeyEvent.ACTION_UP, keycode, 0);
+            ku.setSource(InputDevice.SOURCE_KEYBOARD);
+            b = a && send(ku);
+        }
+        if (a && b) {
             return "OK key " + keycode;
         }
         String out = exec("input -d " + displayId + " keyevent " + keycode);
         if (out.length() > 0) {
             return "FAIL key | " + out;
         }
-        return "OK key " + keycode;
+        return "OK key " + keycode
+                + "\nnote: injected events were refused, this used the input command "
+                + "and its result cannot be verified";
     }
 
     @Override
@@ -762,7 +976,7 @@ public class VdSvc extends IVdSvc.Stub {
     }
 
     @Override
-    public void preview(int maxWidth, int quality, ParcelFileDescriptor out) {
+    public void preview(int maxLongSide, int quality, ParcelFileDescriptor out) {
         Bitmap src = grab(900L);
         if (src == null) {
             closeQuietly(out);
@@ -772,9 +986,11 @@ public class VdSvc extends IVdSvc.Stub {
         try {
             int sw = src.getWidth();
             int sh = src.getHeight();
-            if (maxWidth > 0 && sw > maxWidth) {
-                int nw = maxWidth;
-                int nh = Math.max(1, Math.round((float) sh * nw / sw));
+            int swLong = Math.max(sw, sh);
+            if (maxLongSide > 0 && swLong > maxLongSide) {
+                float k = maxLongSide / (float) swLong;
+                int nw = Math.max(1, Math.round(sw * k));
+                int nh = Math.max(1, Math.round(sh * k));
                 small = Bitmap.createScaledBitmap(src, nw, nh, true);
             }
             if (quality < 30) {
@@ -811,19 +1027,40 @@ public class VdSvc extends IVdSvc.Stub {
     }
 
     private Bitmap grab(long timeoutMs) {
-        long end = SystemClock.uptimeMillis() + timeoutMs;
-        Bitmap b = latest;
-        while (b == null && SystemClock.uptimeMillis() < end) {
-            sleep(25);
-            b = latest;
-        }
-        if (b == null) {
-            return null;
-        }
+        frameUsers.incrementAndGet();
         try {
-            return b.copy(Bitmap.Config.ARGB_8888, false);
+            long reqAt = SystemClock.uptimeMillis();
+            long end = reqAt + timeoutMs;
+            while (true) {
+                synchronized (frameLock) {
+                    Bitmap b = latest;
+                    if (b != null && lastFrameAt > reqAt) {
+                        try {
+                            return b.copy(Bitmap.Config.ARGB_8888, false);
+                        } catch (Throwable t) {
+                            return null;
+                        }
+                    }
+                }
+                if (SystemClock.uptimeMillis() >= end) {
+                    synchronized (frameLock) {
+                        Bitmap b = latest;
+                        if (b == null) {
+                            return null;
+                        }
+                        try {
+                            return b.copy(Bitmap.Config.ARGB_8888, false);
+                        } catch (Throwable t) {
+                            return null;
+                        }
+                    }
+                }
+                sleep(20);
+            }
         } catch (Throwable t) {
             return null;
+        } finally {
+            frameUsers.decrementAndGet();
         }
     }
 
@@ -847,8 +1084,15 @@ public class VdSvc extends IVdSvc.Stub {
                 buf.rewind();
                 bmp.copyPixelsFromBuffer(buf);
             } else {
-                byte[] row = new byte[rowStride];
-                int[] pix = new int[iw * ih];
+                if (rowBuf == null || rowBuf.length < rowStride) {
+                    rowBuf = new byte[rowStride];
+                }
+                byte[] row = rowBuf;
+                int need = iw * ih;
+                if (pixBuf == null || pixBuf.length < need) {
+                    pixBuf = new int[need];
+                }
+                int[] pix = pixBuf;
                 for (int y = 0; y < ih; y++) {
                     buf.position(y * rowStride);
                     int room = Math.min(rowStride, buf.remaining());
@@ -889,31 +1133,33 @@ public class VdSvc extends IVdSvc.Stub {
         b.append("has_frame=").append(latest != null).append('\n');
         b.append("ctx=").append(ctxNote).append('\n');
 
-        Context c = app();
-        if (c != null && displayId > 0) {
-            try {
-                DisplayManager dm = (DisplayManager) c.getSystemService(Context.DISPLAY_SERVICE);
-                Display d = dm.getDisplay(displayId);
-                if (d != null) {
-                    Point real = new Point();
-                    d.getRealSize(real);
-                    Point logical = new Point();
-                    d.getSize(logical);
-                    b.append("real=").append(real.x).append('x').append(real.y).append('\n');
-                    b.append("logical=").append(logical.x).append('x').append(logical.y).append('\n');
-                    b.append("rotation=").append(d.getRotation()).append('\n');
-                    b.append("state=").append(d.getState()).append('\n');
+        if (displayId > 0) {
+            Disp.Info di = Disp.get(displayId);
+            if (di != null) {
+                b.append("logical=").append(di.sizeText()).append('\n');
+                b.append("rotation=").append(di.rotationText()).append('\n');
+                b.append("rot_index=").append(di.rotation).append('\n');
+                b.append("screen=").append(di.landscape() ? "landscape" : "portrait")
+                        .append('\n');
+                b.append("disp_dpi=").append(di.dpi).append('\n');
+                b.append("watch=").append(curLogicalW).append('x').append(curLogicalH)
+                        .append(" rot=").append(Disp.rotationText(curRotation)).append('\n');
+            } else {
+                b.append("disp_err=").append(Disp.error()).append('\n');
+            }
+            Context c = app();
+            if (c != null) {
+                try {
+                    DisplayManager dm = (DisplayManager) c.getSystemService(Context.DISPLAY_SERVICE);
+                    Display d = dm.getDisplay(displayId);
+                    if (d != null) {
+                        b.append("state=").append(d.getState()).append('\n');
+                    }
+                } catch (Throwable ignored) {
                 }
-            } catch (Throwable t) {
-                b.append("display_err=").append(t).append('\n');
             }
         }
         return b.toString();
-    }
-
-    @Override
-    public String shell(String cmd) {
-        return exec(cmd);
     }
 
     private static final String IME_ID = "com.mcpmate.bridge/.McpIme";
@@ -954,7 +1200,10 @@ public class VdSvc extends IVdSvc.Stub {
             }
             String back = exec("cat " + IME_BACKUP + " 2>/dev/null").trim();
             if (back.length() == 0 || "null".equals(back) || IME_ID.equals(back)) {
-                return "FAIL no backup to restore";
+                back = pickOtherIme();
+            }
+            if (back.length() == 0) {
+                return "FAIL no other ime to restore";
             }
             exec("ime set " + back);
             String now = currentIme();
@@ -1025,6 +1274,10 @@ public class VdSvc extends IVdSvc.Stub {
 
     private void shutdownByClientDeath(String why) {
         clientNote = "client gone via " + why;
+        try {
+            deactivateIme();
+        } catch (Throwable ignored) {
+        }
         try {
             destroy();
         } catch (Throwable ignored) {
@@ -1180,7 +1433,7 @@ public class VdSvc extends IVdSvc.Stub {
     }
 
     @Override
-    public String rotate(int orientation) {
+    public synchronized String rotate(int orientation) {
         if (displayId <= 0) {
             return "FAIL no display";
         }
@@ -1201,47 +1454,26 @@ public class VdSvc extends IVdSvc.Stub {
         ImageReader fresh = null;
         try {
             fresh = ImageReader.newInstance(nw, nh, PixelFormat.RGBA_8888, 3);
-            final int cw = nw;
-            final int ch = nh;
-            fresh.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
-                public void onImageAvailable(ImageReader ir) {
-                    Image img = null;
-                    try {
-                        img = ir.acquireLatestImage();
-                        if (img != null) {
-                            Bitmap bmp = toBitmap(img, cw, ch);
-                            if (bmp != null) {
-                                Bitmap prev = latest;
-                                latest = bmp;
-                                lastFrameAt = SystemClock.uptimeMillis();
-                                if (prev != null) {
-                                    try {
-                                        prev.recycle();
-                                    } catch (Throwable ignored) {
-                                    }
-                                }
-                            }
-                        }
-                    } catch (Throwable ignored) {
-                    } finally {
-                        if (img != null) {
-                            try {
-                                img.close();
-                            } catch (Throwable ignored) {
-                            }
-                        }
-                    }
-                }
-            }, readerHandler());
+            attachReader(fresh, nw, nh);
 
-            v.setSurface(fresh.getSurface());
             v.resize(nw, nh, ndpi);
+            v.setSurface(fresh.getSurface());
 
             reader = fresh;
             w = nw;
             h = nh;
             dpi = ndpi;
-            latest = null;
+            Bitmap lb;
+            synchronized (frameLock) {
+                lb = latest;
+                latest = null;
+            }
+            if (lb != null) {
+                try {
+                    lb.recycle();
+                } catch (Throwable ignored) {
+                }
+            }
 
             if (old != null) {
                 try {
@@ -1266,56 +1498,101 @@ public class VdSvc extends IVdSvc.Stub {
     }
 
     private void startOrientationWatch() {
-        Thread t = new Thread(new Runnable() {
+        if (orientThread != null && orientThread.isAlive()) {
+            return;
+        }
+        final Thread t = new Thread(new Runnable() {
             public void run() {
-                while (displayId > 0) {
+                final Thread me = Thread.currentThread();
+                int lastW = -1;
+                int lastH = -1;
+                String lastTop = "";
+                long lastOrientAt = 0L;
+                while (displayId > 0 && orientThread == me) {
                     sleep(1500);
-                    if (displayId <= 0) {
+                    if (displayId <= 0 || orientThread != me) {
                         return;
                     }
-                    try {
-                        int[] cur = currentSize();
-                        if (cur == null) {
-                            continue;
+                    Disp.Info di = Disp.get(displayId);
+                    if (di != null) {
+                        curRotation = di.rotation;
+                        curLogicalW = di.width;
+                        curLogicalH = di.height;
+                        if (di.width != lastW || di.height != lastH) {
+                            lastW = di.width;
+                            lastH = di.height;
+                            Log.add("屏 " + displayId + " " + di.sizeText());
                         }
-                        if (cur[0] == w && cur[1] == h) {
-                            continue;
-                        }
-                        if ((cur[0] == h && cur[1] == w)) {
-                            resizeTo(cur[0], cur[1], dpi);
-                        }
-                    } catch (Throwable ignored) {
                     }
+                    String top = topActivity();
+                    if (top == null || top.equals(lastTop)) {
+                        continue;
+                    }
+                    lastTop = top;
+                    long now = SystemClock.uptimeMillis();
+                    if (now - lastOrientAt < 2500L) {
+                        continue;
+                    }
+                    int so = screenOrientationOf(top);
+                    boolean wantLand = Disp.isLandscapeOrientation(so);
+                    boolean wantPort = Disp.isPortraitOrientation(so);
+                    if (!wantLand && !wantPort) {
+                        continue;
+                    }
+                    if (wantLand == (w > h)) {
+                        continue;
+                    }
+                    lastOrientAt = now;
+                    Log.add("自动转 " + top + " -> " + (wantLand ? "横" : "竖"));
+                    rotate(wantLand ? 1 : 0);
                 }
             }
         }, "vd-orient");
         t.setDaemon(true);
+        orientThread = t;
         t.start();
     }
 
-    private int[] currentSize() {
+    private String topActivity() {
         try {
-            String out = exec("dumpsys window displays 2>/dev/null | grep 'Display: mDisplayId="
-                    + displayId + " '");
-            if (out.length() == 0) {
+            Class<?> cls = Class.forName("android.app.ActivityTaskManager");
+            Object atm = cls.getMethod("getService").invoke(null);
+            if (atm == null) {
                 return null;
             }
-            String[] parts = out.split("\\s+");
-            for (String p : parts) {
-                if (p.startsWith("cur=")) {
-                    String v = p.substring(4);
-                    int x = v.indexOf('x');
-                    if (x <= 0) {
-                        return null;
-                    }
-                    int ww = Integer.parseInt(v.substring(0, x));
-                    int hh = Integer.parseInt(v.substring(x + 1));
-                    return new int[]{ww, hh};
-                }
+            Method m = atm.getClass().getMethod("getTasks",
+                    int.class, boolean.class, boolean.class, int.class);
+            Object obj = m.invoke(atm, 1, false, false, displayId);
+            if (!(obj instanceof java.util.List)) {
+                return null;
             }
-        } catch (Throwable ignored) {
+            java.util.List<?> list = (java.util.List<?>) obj;
+            if (list.isEmpty()) {
+                return null;
+            }
+            Object comp = list.get(0).getClass().getField("topActivity").get(list.get(0));
+            return comp == null ? null : comp.toString();
+        } catch (Throwable t) {
+            return null;
         }
-        return null;
+    }
+
+    private int screenOrientationOf(String comp) {
+        int def = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+        try {
+            Context c = app();
+            if (c == null) {
+                return def;
+            }
+            android.content.ComponentName cn =
+                    android.content.ComponentName.unflattenFromString(comp);
+            if (cn == null) {
+                return def;
+            }
+            return c.getPackageManager().getActivityInfo(cn, 0).screenOrientation;
+        } catch (Throwable t) {
+            return def;
+        }
     }
 
     private static String exec(String cmd) {
@@ -1325,17 +1602,39 @@ public class VdSvc extends IVdSvc.Stub {
             ProcessBuilder pb = new ProcessBuilder("sh", "-c", cmd);
             pb.redirectErrorStream(true);
             p = pb.start();
-            java.io.BufferedReader r = new java.io.BufferedReader(
+            final java.io.BufferedReader r = new java.io.BufferedReader(
                     new java.io.InputStreamReader(p.getInputStream()));
-            String line;
-            int n = 0;
-            while ((line = r.readLine()) != null && n < 20) {
-                b.append(line).append('\n');
-                n++;
+            final StringBuilder sink = b;
+            Thread drain = new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        String line;
+                        int n = 0;
+                        while ((line = r.readLine()) != null) {
+                            if (n < 20) {
+                                synchronized (sink) {
+                                    sink.append(line).append('\n');
+                                }
+                                n++;
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }, "exec-drain");
+            drain.setDaemon(true);
+            drain.start();
+            try {
+                if (!p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                    p.destroy();
+                }
+                drain.join(500L);
+            } catch (Throwable ignored) {
             }
-            p.waitFor();
         } catch (Throwable t) {
-            b.append("ERR ").append(t);
+            synchronized (b) {
+                b.append("ERR ").append(t);
+            }
         } finally {
             if (p != null) {
                 try {
@@ -1344,7 +1643,9 @@ public class VdSvc extends IVdSvc.Stub {
                 }
             }
         }
-        return b.toString().trim();
+        synchronized (b) {
+            return b.toString().trim();
+        }
     }
 
     private static void sleep(long ms) {

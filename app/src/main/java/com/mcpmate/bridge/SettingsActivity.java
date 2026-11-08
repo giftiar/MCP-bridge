@@ -42,6 +42,13 @@ public class SettingsActivity extends Activity {
         void run();
     }
 
+    private void syncResume() {
+        android.widget.TextView v = (android.widget.TextView) findViewById(R.id.btn_resume);
+        if (v != null) {
+            v.setText(Config.isPaused() ? "恢复运行" : "立即急停");
+        }
+    }
+
     private EditText etToken;
     private EditText etPortLocal;
     private EditText etPortLan;
@@ -106,14 +113,81 @@ public class SettingsActivity extends Activity {
         });
         click(R.id.btn_resume, new Act() {
             public void run() {
-                boolean next = !Config.isPaused();
-                Config.setPaused(next);
-                toast(next ? "已暂停：AI 无法操作" : "已恢复：允许 AI 操作");
+                StopBar.setPaused(SettingsActivity.this, !Config.isPaused(), false);
+                syncResume();
             }
         });
+        syncResume();
         click(R.id.btn_selftest, new Act() {
             public void run() {
-                showText("本机能力自检", Ui.selfTest());
+                if (Config.isVdMode()) {
+                    showText("虚拟屏自检", vdSelfTest());
+                } else {
+                    showText("本机能力自检", Ui.selfTest());
+                }
+            }
+        });
+
+        android.widget.CompoundButton swDiff =
+                (android.widget.CompoundButton) findViewById(R.id.sw_diff);
+        if (swDiff != null) {
+            swDiff.setChecked(Config.isDiffOn());
+            swDiff.setOnCheckedChangeListener(
+                    new android.widget.CompoundButton.OnCheckedChangeListener() {
+                        public void onCheckedChanged(android.widget.CompoundButton v, boolean on) {
+                            Config.setDiffOn(on);
+                        }
+                    });
+        }
+
+        android.widget.CompoundButton swInfo =
+                (android.widget.CompoundButton) findViewById(R.id.sw_info);
+        if (swInfo != null) {
+            swInfo.setChecked(Config.isInfoOn());
+            swInfo.setOnCheckedChangeListener(
+                    new android.widget.CompoundButton.OnCheckedChangeListener() {
+                        public void onCheckedChanged(android.widget.CompoundButton v, boolean on) {
+                            Config.setInfoOn(on);
+                            if (!Config.isVdMode()) {
+                                if (on) {
+                                    InfoBar.show(SettingsActivity.this);
+                                } else {
+                                    InfoBar.hide();
+                                }
+                            }
+                        }
+                    });
+        }
+
+        click(R.id.btn_diag, new Act() {
+            public void run() {
+                toast("正在生成诊断包…");
+                new Thread(new Runnable() {
+                    public void run() {
+                        final String r = Diag.build(SettingsActivity.this);
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                showText("诊断包", r
+                                        + "\n\n把这个 zip 发给开发者即可。");
+                            }
+                        });
+                    }
+                }, "diag").start();
+            }
+        });
+
+        click(R.id.btn_clearcrash, new Act() {
+            public void run() {
+                try {
+                    java.io.File f = App.crashFile(SettingsActivity.this);
+                    if (f.exists() && f.delete()) {
+                        toast("崩溃记录已清除");
+                    } else {
+                        toast("没有崩溃记录");
+                    }
+                } catch (Throwable t) {
+                    toast("清除失败 " + t);
+                }
             }
         });
         click(R.id.btn_battery, new Act() {
@@ -302,6 +376,11 @@ public class SettingsActivity extends Activity {
         if (swOcrImg != null) {
             swOcrImg.setChecked(Config.isOcrImageOn());
         }
+        android.widget.CompoundButton swDiff0 =
+                (android.widget.CompoundButton) findViewById(R.id.sw_diff);
+        if (swDiff0 != null) {
+            swDiff0.setChecked(Config.isDiffOn());
+        }
         updateWarn();
     }
 
@@ -329,6 +408,14 @@ public class SettingsActivity extends Activity {
             toast("间隔需为 0-60000 毫秒");
             return;
         }
+        if (swLan.isChecked() && pw > 0 && pw == pl) {
+            toast("局域网端口不能与本机端口相同，否则局域网监听会被跳过");
+            return;
+        }
+
+        boolean portChanged = pl != Config.getPortLocal()
+                || pw != Config.getPortLan()
+                || swLan.isChecked() != Config.isLan();
 
         Config.setToken(token);
         Config.setPortLocal(pl);
@@ -336,13 +423,38 @@ public class SettingsActivity extends Activity {
         Config.setInterval(ivl);
         Config.setLan(swLan.isChecked());
 
-        if (Config.isEnabled()) {
-            BridgeService.start(this);
+        if (BridgeService.running) {
+            if (portChanged) {
+                BridgeService.stop(this);
+                BridgeService.start(this);
+                toast("已保存，服务已重启");
+            } else {
+                toast("已保存");
+            }
         } else {
-            BridgeService.stop(this);
+            toast(portChanged ? "已保存，服务未运行，改动下次启动生效" : "已保存");
         }
-        toast("已保存，正在应用");
         updateWarn();
+    }
+
+    private String vdSelfTest() {
+        StringBuilder b = new StringBuilder();
+        b.append("mode: virtual_display\n");
+        b.append("shizuku_alive: ").append(VdMgr.shizukuAlive()).append('\n');
+        b.append("shizuku_perm: ").append(VdMgr.hasPerm()).append('\n');
+        b.append("service_ready: ").append(VdMgr.ready()).append('\n');
+        String lc = VdMgr.lastCreate();
+        if (lc.length() > 0) {
+            b.append("last_create: ").append(lc).append('\n');
+        }
+        String st = VdTools.state(this);
+        int nl = st.indexOf('\n');
+        b.append("state: ").append(nl > 0 ? st.substring(0, nl) : st).append('\n');
+        if (VdMgr.ready()) {
+            b.append("\n--- info ---\n").append(VdMgr.info());
+        }
+        b.append("\nnote: 本模式不靠无障碍，只需要 Shizuku。\n");
+        return b.toString();
     }
 
     private void testConn() {
@@ -352,9 +464,10 @@ public class SettingsActivity extends Activity {
         Thread th = new Thread(new Runnable() {
             public void run() {
                 final String r = HttpSrv.testLocalBlocking();
+                final String lan = Config.isLan() ? HttpSrv.testLanBlocking() : null;
                 h.post(new Runnable() {
                     public void run() {
-                        toast(r);
+                        showText("连接测试", lan == null ? r : r + "\n\n" + lan);
                     }
                 });
             }

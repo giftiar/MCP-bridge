@@ -38,6 +38,19 @@ public class BridgeService extends Service {
     public static volatile boolean running = false;
 
     private static volatile Context INST;
+    private static volatile BridgeService SELF;
+
+    static void refreshPaused() {
+        BridgeService s = SELF;
+        if (s == null) {
+            return;
+        }
+        try {
+            String st = Config.isPaused() ? "已急停" : (running ? "正在运行" : "未启动");
+            s.show(s.build(st));
+        } catch (Throwable ignored) {
+        }
+    }
 
     public static Context ctx() {
         return INST;
@@ -62,6 +75,7 @@ public class BridgeService extends Service {
     public void onCreate() {
         super.onCreate();
         INST = getApplicationContext();
+        SELF = this;
         Config.init(this);
         try {
             makeChannel();
@@ -83,16 +97,7 @@ public class BridgeService extends Service {
         }
 
         if (intent != null && ACTION_TOGGLE_PAUSE.equals(intent.getAction())) {
-            boolean next = !Config.isPaused();
-            Config.setPaused(next);
-            String msg = next ? "已急停：AI 的所有操作已被阻止" : "已恢复：允许 AI 操作";
-            Log.add(msg);
-            try {
-                android.widget.Toast.makeText(this, msg,
-                        android.widget.Toast.LENGTH_LONG).show();
-            } catch (Throwable ignored) {
-            }
-            show(build(running ? "已急停" : "已停止"));
+            StopBar.setPaused(this, !Config.isPaused(), true);
             return START_STICKY;
         }
 
@@ -115,15 +120,11 @@ public class BridgeService extends Service {
             show(build(Config.isPaused() ? "已急停" : (running ? "运行中" : "未启动")));
 
             if (Config.isVdMode()) {
-                startVd();
+                startVd(this);
             } else {
                 stopVd();
                 StopBar.setSmall(false);
-                if (Config.isBallOn()) {
-                    StopBar.show(this);
-                } else {
-                    StopBar.hide();
-                }
+                StopBar.show(this);
                 if (Config.isInfoOn()) {
                     InfoBar.show(this);
                 } else {
@@ -137,21 +138,22 @@ public class BridgeService extends Service {
         return START_STICKY;
     }
 
-    private void startVd() {
+    static void startVd(final Context c) {
         InfoBar.hide();
         StopBar.setSmall(true);
-        if (Config.isBallOn()) {
-            StopBar.show(this);
-        } else {
-            StopBar.hide();
-        }
+        StopBar.show(c);
         boolean canOverlay = true;
         try {
-            canOverlay = android.provider.Settings.canDrawOverlays(this);
+            canOverlay = android.provider.Settings.canDrawOverlays(c);
         } catch (Throwable ignored) {
         }
         if (canOverlay) {
-            VdWin.show(this);
+            VdMgr.applyOrient(c);
+            if (VdWin.isShowing()) {
+                VdWin.refresh(c);
+            } else {
+                VdWin.show(c);
+            }
         } else {
             Log.add("缺少悬浮窗权限，请到设置页授予");
         }
@@ -163,8 +165,16 @@ public class BridgeService extends Service {
                     public void run() {
                         String sweep = VdMgr.killAllDisplays();
                         Log.add("冷启动清理 " + sweep.replace("\n", " | "));
-                        String r = VdMgr.create(BridgeService.this);
+                        String r = VdMgr.create(c);
                         Log.add("建屏 " + r);
+                        if (r.startsWith("OK")) {
+                            new android.os.Handler(android.os.Looper.getMainLooper())
+                                    .post(new Runnable() {
+                                        public void run() {
+                                            VdWin.refresh(c);
+                                        }
+                                    });
+                        }
                     }
                 }, "vd-create").start();
             }
@@ -182,10 +192,10 @@ public class BridgeService extends Service {
             Log.add("Shizuku 未授权，请到设置页授权");
             return;
         }
-        VdMgr.bind(this);
+        VdMgr.bind(c);
     }
 
-    private void stopVd() {
+    static void stopVd() {
         try {
             if (VdMgr.ready()) {
                 VdMgr.deactivateIme();
@@ -204,27 +214,26 @@ public class BridgeService extends Service {
     }
 
     public static void applyMode(Context c) {
+        Diff.clear();
         if (!running) {
-            VdWin.hide();
+            stopVd();
             return;
         }
         if (Config.isVdMode()) {
             InfoBar.hide();
             StopBar.setSmall(true);
-            if (Config.isBallOn()) {
-                StopBar.refresh(c);
-            }
-            if (VdWin.isShowing()) {
+            StopBar.refresh(c);
+            if (!VdMgr.ready()) {
+                startVd(c);
+            } else if (VdWin.isShowing()) {
                 VdWin.refresh(c);
             } else if (Settings0.canOverlay(c)) {
                 VdWin.show(c);
             }
         } else {
-            VdWin.hide();
+            stopVd();
             StopBar.setSmall(false);
-            if (Config.isBallOn()) {
-                StopBar.refresh(c);
-            }
+            StopBar.refresh(c);
             if (Config.isInfoOn()) {
                 InfoBar.show(c);
             }
@@ -244,6 +253,7 @@ public class BridgeService extends Service {
     @Override
     public void onDestroy() {
         Log.add("服务已停止");
+        SELF = null;
         stopVd();
         StopBar.setSmall(false);
         StopBar.hide();

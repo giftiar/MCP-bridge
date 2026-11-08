@@ -225,29 +225,4 @@ public class Grid {
         return bmp;
     }
 
-    private static String shortText(String s, int max) {
-        if (s == null) {
-            return "";
-        }
-        String t = s.replace('\n', ' ').trim();
-        if (t.length() <= max) {
-            return t;
-        }
-        return t.substring(0, max) + "\u2026";
-    }
-
-    public static String hint(int w, int h) {
-        StringBuilder b = new StringBuilder();
-        b.append("坐标网格已叠在图上：\n");
-        b.append("  - 细青色线每 ").append(STEP).append("px 一条\n");
-        b.append("  - 粗黄色线每 ").append(STEP * MAJOR).append("px 一条\n");
-        b.append("  - 上边缘数字是 x 坐标，左边缘数字是 y 坐标，都是像素值\n");
-        b.append("  - 图片尺寸 ").append(w).append('x').append(h);
-        b.append("，和屏幕像素 1:1，不用换算\n");
-        b.append("用法：先看目标夹在哪两条线之间，再按比例估出具体像素，");
-        b.append("直接当 click 的 x/y 传。\n");
-        b.append("例：目标左侧最近粗黄线标着 360，右边一条是 960，");
-        b.append("目标大约在两者中间偏左，则 x≈420。\n");
-        return b.toString();
-    }
 }

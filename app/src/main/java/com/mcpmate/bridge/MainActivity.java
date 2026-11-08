@@ -20,16 +20,19 @@ package com.mcpmate.bridge;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.View;
 import android.widget.CompoundButton;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import android.app.Activity;
 
+import com.google.android.material.button.MaterialButton;
 import com.google.android.material.materialswitch.MaterialSwitch;
 
 import java.io.File;
@@ -49,6 +52,7 @@ public class MainActivity extends Activity {
     private boolean loading = true;
     private boolean uiReady = false;
     private boolean pendingCheck = false;
+    private androidx.appcompat.app.AlertDialog orientDialog;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -144,6 +148,109 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void askOrient() {
+        try {
+            int[] s = VdMgr.autoSize(this);
+            float d = getResources().getDisplayMetrics().density;
+            int gap = Math.round(10 * d);
+
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            int padH = Math.round(22 * d);
+            box.setPadding(padH, Math.round(4 * d), padH, 0);
+
+            TextView hint = new TextView(this);
+            hint.setText("横屏应用和游戏选横屏，避免上下黑边。"
+                    + "建屏后也可以点小窗左上角的旋转按钮随时切换。");
+            hint.setTextSize(13f);
+            hint.setTextColor(0xFF9E9E9E);
+            hint.setLineSpacing(Math.round(3 * d), 1f);
+            LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-1, -2);
+            hlp.bottomMargin = Math.round(14 * d);
+            box.addView(hint, hlp);
+
+            box.addView(makeOrientButton("竖屏　" + s[0] + " × " + s[1],
+                    "普通应用、聊天、浏览器", 0, gap, d));
+            box.addView(makeOrientButton("横屏　" + s[1] + " × " + s[0],
+                    "横屏应用、游戏、TV 版", 1, 0, d));
+
+            orientDialog = new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                    .setTitle("创建屏幕类型")
+                    .setCancelable(false)
+                    .setView(box)
+                    .setNegativeButton("取消，不启动",
+                            new android.content.DialogInterface.OnClickListener() {
+                                public void onClick(android.content.DialogInterface dg, int w) {
+                                    loading = true;
+                                    Config.setEnabled(false);
+                                    if (swEnable != null) {
+                                        swEnable.setChecked(false);
+                                    }
+                                    loading = false;
+                                    delayed();
+                                }
+                            })
+                    .show();
+        } catch (Throwable t) {
+            BridgeService.start(this);
+            delayed();
+        }
+    }
+
+    private View makeOrientButton(String title, String sub, final int orient,
+                                  int bottomMargin, float d) {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(16f);
+        t.setTextColor(0xFF1F1F1F);
+
+        TextView st = new TextView(this);
+        st.setText(sub);
+        st.setTextSize(12f);
+        st.setTextColor(0xFF6E6E6E);
+
+        col.addView(t, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
+        slp.topMargin = Math.round(2 * d);
+        col.addView(st, slp);
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFFF2F2F5);
+        bg.setCornerRadius(16 * d);
+        bg.setStroke(Math.max(1, Math.round(d)), 0xFFD8D8DE);
+
+        col.setBackground(bg);
+        int ph = Math.round(18 * d);
+        int pv = Math.round(14 * d);
+        col.setPadding(ph, pv, ph, pv);
+        col.setClickable(true);
+        col.setFocusable(true);
+
+        col.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                androidx.appcompat.app.AlertDialog dlg = orientDialog;
+                orientDialog = null;
+                if (dlg != null) {
+                    try {
+                        dlg.dismiss();
+                    } catch (Throwable ignored) {
+                    }
+                }
+                Config.setVdOrient(orient);
+                BridgeService.start(MainActivity.this);
+                delayed();
+            }
+        });
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = bottomMargin;
+        col.setLayoutParams(lp);
+        return col;
+    }
+
     private void showOverlayGate() {
         ensureOverlay();
     }
@@ -174,24 +281,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void ensureShizuku() {
-        if (!VdMgr.shizukuAlive()) {
-            try {
-                new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
-                        .setTitle("需要 Shizuku")
-                        .setMessage("虚拟屏模式需要 Shizuku 运行并授权。\n"
-                                + "请安装 Shizuku 并以 root 或 ADB 方式启动。")
-                        .setPositiveButton("知道了", null)
-                        .show();
-            } catch (Throwable ignored) {
-            }
-            return;
-        }
-        if (!VdMgr.hasPerm()) {
-            VdMgr.requestPerm();
-        }
-    }
-
     private void initUi() {
         setContentView(R.layout.activity_main);
 
@@ -214,7 +303,11 @@ public class MainActivity extends Activity {
                     }
                     Config.setEnabled(checked);
                     if (checked) {
-                        BridgeService.start(MainActivity.this);
+                        if (Config.isVdMode()) {
+                            askOrient();
+                        } else {
+                            BridgeService.start(MainActivity.this);
+                        }
                     } else {
                         BridgeService.stop(MainActivity.this);
                     }
@@ -307,14 +400,9 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (!Config.isBallOn()) {
-            Config.setBallOn(true);
-            Log.add("已自动开启急停悬浮球（已有悬浮窗权限）");
-        }
-
         if (Config.isVdMode()) {
             StopBar.setSmall(true);
-            if (Config.isBallOn() && !StopBar.isShown()) {
+            if (!StopBar.isShown()) {
                 StopBar.show(this);
             }
             InfoBar.hide();
@@ -418,8 +506,7 @@ public class MainActivity extends Activity {
             } catch (Throwable t) {
                 unlock = false;
             }
-            String mode = (Config.isBallOn() || StopBar.isShown())
-                    ? "悬浮球" : "未开启";
+            String mode = StopBar.isShown() ? "悬浮球" : "未开启";
 
             StringBuilder b = new StringBuilder();
             if (Config.isPaused()) {
@@ -441,7 +528,6 @@ public class MainActivity extends Activity {
                 b.append("\nrev  ").append(A11ySvc.rev);
             }
             b.append("\n监听  ").append(realPortText());
-            b.append("\n无障碍  ").append(Config.isVdMode() ? "不需要" : a11y);
             b.append("\n悬浮窗  ").append(overlayText());
             b.append("\n急停球  ").append(mode);
             tvStatus.setText(b.toString());

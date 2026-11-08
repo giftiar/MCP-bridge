@@ -44,16 +44,26 @@ public class App extends Application {
         } catch (Throwable ignored) {
         }
         try {
+            VdMgr.hookPermResult();
+        } catch (Throwable ignored) {
+        }
+        try {
+            final Thread.UncaughtExceptionHandler prev =
+                    Thread.getDefaultUncaughtExceptionHandler();
             Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
                 @Override
                 public void uncaughtException(Thread thread, Throwable e) {
+                    boolean main = thread != null && "main".equals(thread.getName());
                     try {
                         saveCrash(thread, e);
                     } catch (Throwable ignored) {
                     }
-                    boolean main = thread != null && "main".equals(thread.getName());
                     if (main) {
                         Process.killProcess(Process.myPid());
+                        return;
+                    }
+                    if (prev != null) {
+                        prev.uncaughtException(thread, e);
                     }
                 }
             });

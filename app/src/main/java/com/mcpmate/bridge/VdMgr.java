@@ -36,9 +36,6 @@ import rikka.shizuku.Shizuku;
 public class VdMgr {
 
     public static final int REQ_PERM = 8801;
-    public static final int DEF_W = 1080;
-    public static final int DEF_H = 1920;
-    public static final int DEF_DPI = 420;
 
     private static volatile String lastCreate = "";
 
@@ -49,9 +46,21 @@ public class VdMgr {
     private static volatile IVdSvc svc;
     private static volatile String lastError = "";
     private static volatile boolean binding = false;
+    private static final java.util.concurrent.atomic.AtomicLong bindToken =
+            new java.util.concurrent.atomic.AtomicLong(0L);
 
     private static Shizuku.UserServiceArgs args;
     private static android.os.Binder clientBinder;
+
+    private static final java.util.concurrent.ExecutorService PIPE_READER =
+            java.util.concurrent.Executors.newCachedThreadPool(
+                    new java.util.concurrent.ThreadFactory() {
+                        public Thread newThread(Runnable r) {
+                            Thread t = new Thread(r, "vd-pipe");
+                            t.setDaemon(true);
+                            return t;
+                        }
+                    });
 
     public interface Listener {
         void onBound();
@@ -127,14 +136,53 @@ public class VdMgr {
         }
     }
 
+    private static volatile boolean permHooked = false;
+
+    private static final Shizuku.OnRequestPermissionResultListener PERM_LISTENER =
+            new Shizuku.OnRequestPermissionResultListener() {
+                public void onRequestPermissionResult(int requestCode, int grantResult) {
+                    if (requestCode != REQ_PERM) {
+                        return;
+                    }
+                    if (grantResult != PackageManager.PERMISSION_GRANTED) {
+                        lastError = "permission denied by user";
+                        Log.add("Shizuku 授权被拒");
+                        return;
+                    }
+                    Log.add("Shizuku 已授权，开始连接");
+                    Context c = BridgeService.ctx();
+                    if (c != null) {
+                        bind(c);
+                    }
+                }
+            };
+
+    public static void hookPermResult() {
+        if (permHooked) {
+            return;
+        }
+        permHooked = true;
+        try {
+            Shizuku.addRequestPermissionResultListener(PERM_LISTENER);
+        } catch (Throwable t) {
+            lastError = "hook perm: " + t;
+        }
+    }
+
     public static void requestPerm() {
         try {
+            hookPermResult();
             if (!Shizuku.pingBinder()) {
                 lastError = "shizuku not running";
                 return;
             }
             if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
                 Shizuku.requestPermission(REQ_PERM);
+            } else {
+                Context c = BridgeService.ctx();
+                if (c != null) {
+                    bind(c);
+                }
             }
         } catch (Throwable t) {
             lastError = "request perm: " + t;
@@ -150,6 +198,7 @@ public class VdMgr {
             return;
         }
         binding = true;
+        final long token = bindToken.incrementAndGet();
         try {
             ComponentName cn = new ComponentName(ctx.getPackageName(), VdSvc.class.getName());
             args = new Shizuku.UserServiceArgs(cn)
@@ -161,7 +210,24 @@ public class VdMgr {
         } catch (Throwable t) {
             binding = false;
             lastError = "bind: " + t;
+            return;
         }
+        Thread guard = new Thread(new Runnable() {
+            public void run() {
+                try {
+                    Thread.sleep(12000L);
+                } catch (Throwable ignored) {
+                }
+                if (bindToken.get() == token && binding) {
+                    binding = false;
+                    if (svc == null) {
+                        lastError = "bind timeout: Shizuku did not answer";
+                    }
+                }
+            }
+        }, "vd-bind-guard");
+        guard.setDaemon(true);
+        guard.start();
     }
 
     public static void unbind() {
@@ -176,9 +242,10 @@ public class VdMgr {
     }
 
     public static int[] autoSize(Context ctx) {
-        int w = DEF_W;
-        int h = DEF_H;
-        int dpi = DEF_DPI;
+        int w = 0;
+        int h = 0;
+        int dpi = 0;
+
         try {
             WindowManager wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
             Display d = wm.getDefaultDisplay();
@@ -186,16 +253,43 @@ public class VdMgr {
             d.getRealSize(real);
             DisplayMetrics dm = new DisplayMetrics();
             d.getRealMetrics(dm);
-            if (dm.densityDpi > 0) {
-                dpi = dm.densityDpi;
-            }
-            int shortSide = Math.min(real.x, real.y);
-            if (shortSide > 0) {
-                w = shortSide;
-                h = Math.round(shortSide * 16f / 9f);
+            w = real.x;
+            h = real.y;
+            dpi = dm.densityDpi;
+            if ((d.getRotation() % 2) != 0) {
+                int t = w;
+                w = h;
+                h = t;
             }
         } catch (Throwable ignored) {
         }
+
+        if (w <= 0 || h <= 0 || dpi <= 0) {
+            try {
+                DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+                if (w <= 0) {
+                    w = dm.widthPixels;
+                }
+                if (h <= 0) {
+                    h = dm.heightPixels;
+                }
+                if (dpi <= 0) {
+                    dpi = dm.densityDpi;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        if (w <= 0) {
+            w = 720;
+        }
+        if (h <= 0) {
+            h = 1280;
+        }
+        if (dpi <= 0) {
+            dpi = 320;
+        }
+
         if (w % 2 != 0) {
             w++;
         }
@@ -205,14 +299,25 @@ public class VdMgr {
         return new int[]{w, h, dpi};
     }
 
+    public static int[] applyOrient(Context ctx) {
+        int[] s = autoSize(ctx);
+        boolean land = Config.getVdOrient() == 1;
+        int w = land ? s[1] : s[0];
+        int h = land ? s[0] : s[1];
+        Config.setVdW(w);
+        Config.setVdH(h);
+        Config.setVdDpi(s[2]);
+        return new int[]{w, h, s[2]};
+    }
+
     public static String create(Context ctx) {
         if (svc == null) {
             return "FAIL service not ready";
         }
-        int[] s = autoSize(ctx);
-        int w = Config.getVdW() > 0 ? Config.getVdW() : s[0];
-        int h = Config.getVdH() > 0 ? Config.getVdH() : s[1];
-        int dpi = Config.getVdDpi() > 0 ? Config.getVdDpi() : s[2];
+        int[] s = applyOrient(ctx);
+        int w = s[0];
+        int h = s[1];
+        int dpi = s[2];
         try {
             String r = svc.create(w, h, dpi);
             lastCreate = r;
@@ -220,37 +325,97 @@ public class VdMgr {
                 Config.setVdW(w);
                 Config.setVdH(h);
                 Config.setVdDpi(dpi);
+                Config.setVdOrient(w > h ? 1 : 0);
             }
-            return r;
+            return r + " land=" + (w > h) + " want=" + Config.getVdOrient();
         } catch (Throwable t) {
             lastCreate = "FAIL " + t;
             return lastCreate;
         }
     }
 
+    public static boolean isLandscape() {
+        IVdSvc s = svc;
+        if (s == null) {
+            return Config.getVdW() > Config.getVdH();
+        }
+        try {
+            String info = s.info();
+            int w = pickInt(info, "width=");
+            int h = pickInt(info, "height=");
+            if (w > 0 && h > 0) {
+                return w > h;
+            }
+        } catch (Throwable ignored) {
+        }
+        return Config.getVdW() > Config.getVdH();
+    }
+
     public static String rotate(boolean landscape) {
-        if (svc == null) {
+        IVdSvc s = svc;
+        if (s == null) {
             return "FAIL no service";
         }
         try {
-            String r = svc.rotate(landscape ? 1 : 0);
-            if (r.startsWith("OK")) {
-                String info = svc.info();
-                int w = pickInt(info, "width=");
-                int h = pickInt(info, "height=");
-                int d = pickInt(info, "dpi=");
-                if (w > 0 && h > 0) {
-                    Config.setVdW(w);
-                    Config.setVdH(h);
-                }
-                if (d > 0) {
-                    Config.setVdDpi(d);
-                }
+            String r = s.rotate(landscape ? 1 : 0);
+            if (!r.startsWith("OK")) {
+                return r;
             }
-            return r;
+            int w = -1;
+            int h = -1;
+            int[] sz = parseSize(r);
+            if (sz != null) {
+                w = sz[0];
+                h = sz[1];
+            }
+            if (w <= 0 || h <= 0) {
+                String info = s.info();
+                w = pickInt(info, "width=");
+                h = pickInt(info, "height=");
+            }
+            if (w <= 0 || h <= 0) {
+                return r + " but size unknown, config not updated";
+            }
+            Config.setVdW(w);
+            Config.setVdH(h);
+            Config.setVdOrient(w > h ? 1 : 0);
+            return r + " conf=" + w + "x" + h;
         } catch (Throwable t) {
             return "FAIL " + t;
         }
+    }
+
+    private static int[] parseSize(String s) {
+        try {
+            for (int i = 0; i < s.length(); i++) {
+                if (!Character.isDigit(s.charAt(i))) {
+                    continue;
+                }
+                int j = i;
+                while (j < s.length() && Character.isDigit(s.charAt(j))) {
+                    j++;
+                }
+                if (j >= s.length() || s.charAt(j) != 'x') {
+                    continue;
+                }
+                int k = j + 1;
+                int m = k;
+                while (m < s.length() && Character.isDigit(s.charAt(m))) {
+                    m++;
+                }
+                if (m == k) {
+                    continue;
+                }
+                int w = Integer.parseInt(s.substring(i, j));
+                int h = Integer.parseInt(s.substring(k, m));
+                if (w > 0 && h > 0) {
+                    return new int[]{w, h};
+                }
+                i = m;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     public static int pickInt(String s, String key) {
@@ -372,6 +537,42 @@ public class VdMgr {
         }
     }
 
+    public static String touchDown(int x, int y) {
+        IVdSvc s = svc;
+        if (s == null) {
+            return "FAIL no service";
+        }
+        try {
+            return s.touchDown(x, y);
+        } catch (Throwable t) {
+            return "FAIL " + t;
+        }
+    }
+
+    public static String touchMove(int x, int y) {
+        IVdSvc s = svc;
+        if (s == null) {
+            return "FAIL no service";
+        }
+        try {
+            return s.touchMove(x, y);
+        } catch (Throwable t) {
+            return "FAIL " + t;
+        }
+    }
+
+    public static String touchUp(int x, int y) {
+        IVdSvc s = svc;
+        if (s == null) {
+            return "FAIL no service";
+        }
+        try {
+            return s.touchUp(x, y);
+        } catch (Throwable t) {
+            return "FAIL " + t;
+        }
+    }
+
     public static String longClick(int x, int y) {
         if (svc == null) {
             return "FAIL no service";
@@ -429,14 +630,12 @@ public class VdMgr {
             w = pipe[1];
 
             final ParcelFileDescriptor rr = r;
-            final byte[][] box = new byte[1][];
-            Thread t = new Thread(new Runnable() {
-                public void run() {
-                    box[0] = readAll(rr);
-                }
-            }, "vd-cap");
-            t.setDaemon(true);
-            t.start();
+            java.util.concurrent.Future<byte[]> fr =
+                    PIPE_READER.submit(new java.util.concurrent.Callable<byte[]>() {
+                        public byte[] call() {
+                            return readAll(rr);
+                        }
+                    });
 
             s.capture(w);
             try {
@@ -444,8 +643,13 @@ public class VdMgr {
             } catch (Throwable ignored) {
             }
             w = null;
-            t.join(8000L);
-            return box[0];
+            try {
+                return fr.get(8, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (Throwable ignored) {
+                fr.cancel(true);
+                lastError = "capture timeout";
+                return null;
+            }
         } catch (Throwable t) {
             lastError = "capture: " + t;
             return null;
@@ -478,14 +682,12 @@ public class VdMgr {
             w = pipe[1];
 
             final ParcelFileDescriptor rr = r;
-            final byte[][] box = new byte[1][];
-            Thread t = new Thread(new Runnable() {
-                public void run() {
-                    box[0] = readAll(rr);
-                }
-            }, "vd-prev");
-            t.setDaemon(true);
-            t.start();
+            java.util.concurrent.Future<byte[]> fr =
+                    PIPE_READER.submit(new java.util.concurrent.Callable<byte[]>() {
+                        public byte[] call() {
+                            return readAll(rr);
+                        }
+                    });
 
             s.preview(maxWidth, quality, w);
             try {
@@ -493,8 +695,13 @@ public class VdMgr {
             } catch (Throwable ignored) {
             }
             w = null;
-            t.join(5000L);
-            return box[0];
+            try {
+                return fr.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (Throwable ignored) {
+                fr.cancel(true);
+                lastError = "preview timeout";
+                return null;
+            }
         } catch (Throwable t) {
             return null;
         } finally {

@@ -25,6 +25,8 @@ import android.os.Build;
 
 public class Notif {
 
+    private static final int NID = 1002;
+
     public static void alert(Context c, boolean paused) {
         try {
             NotificationManager nm = (NotificationManager)
@@ -45,7 +47,7 @@ public class Notif {
             if (paused) {
                 b.setPriority(Notification.PRIORITY_HIGH);
             }
-            nm.notify(BridgeService.NID, b.build());
+            nm.notify(NID, b.build());
         } catch (Throwable ignored) {
         }
     }

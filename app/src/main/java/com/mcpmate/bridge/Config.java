@@ -20,8 +20,6 @@ package com.mcpmate.bridge;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-import java.util.Random;
-
 public class Config {
 
     private static SharedPreferences sp;
@@ -69,20 +67,12 @@ public class Config {
 
     public static String randomToken() {
         String chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-        Random r = new Random();
+        java.security.SecureRandom r = new java.security.SecureRandom();
         StringBuilder b = new StringBuilder();
         for (int i = 0; i < 16; i++) {
             b.append(chars.charAt(r.nextInt(chars.length())));
         }
         return b.toString();
-    }
-
-    public static boolean isBallOn() {
-        return getBool("ball", false);
-    }
-
-    public static void setBallOn(boolean v) {
-        putBool("ball", v);
     }
 
     public static boolean isInfoOn() {
@@ -91,14 +81,6 @@ public class Config {
 
     public static void setInfoOn(boolean v) {
         putBool("info", v);
-    }
-
-    public static boolean isOnboarded() {
-        return getBool("onb", false);
-    }
-
-    public static void setOnboarded(boolean v) {
-        putBool("onb", v);
     }
 
     public static boolean isAgreed() {
@@ -190,6 +172,14 @@ public class Config {
         return getBool("ocrimg", true);
     }
 
+    public static boolean isDiffOn() {
+        return getBool("diff", true);
+    }
+
+    public static void setDiffOn(boolean v) {
+        putBool("diff", v);
+    }
+
     public static void setOcrImageOn(boolean v) {
         putBool("ocrimg", v);
     }
@@ -223,6 +213,14 @@ public class Config {
         putInt("vdh", v);
     }
 
+    public static int getVdOrient() {
+        return getInt("vdorient", 0);
+    }
+
+    public static void setVdOrient(int v) {
+        putInt("vdorient", v > 0 ? 1 : 0);
+    }
+
     public static int getVdDpi() {
         return getInt("vddpi", 0);
     }
@@ -250,5 +248,18 @@ public class Config {
     public static void setVdBallPos(int x, int y) {
         putInt("vdballx", x);
         putInt("vdbally", y);
+    }
+
+    public static int getStopX() {
+        return getInt("stopx", -1);
+    }
+
+    public static int getStopY() {
+        return getInt("stopy", -1);
+    }
+
+    public static void setStopPos(int x, int y) {
+        putInt("stopx", x);
+        putInt("stopy", y);
     }
 }

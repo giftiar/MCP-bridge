@@ -17,15 +17,32 @@
 
 package com.mcpmate.bridge;
 
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.LinkedList;
-import java.util.Locale;
 
 public class Log {
 
     private static final LinkedList<String> LIST = new LinkedList<String>();
-    private static final SimpleDateFormat FMT = new SimpleDateFormat("HH:mm:ss", Locale.US);
+
+    private static String now() {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        StringBuilder b = new StringBuilder(8);
+        int h = c.get(java.util.Calendar.HOUR_OF_DAY);
+        int m = c.get(java.util.Calendar.MINUTE);
+        int s = c.get(java.util.Calendar.SECOND);
+        if (h < 10) {
+            b.append('0');
+        }
+        b.append(h).append(':');
+        if (m < 10) {
+            b.append('0');
+        }
+        b.append(m).append(':');
+        if (s < 10) {
+            b.append('0');
+        }
+        b.append(s);
+        return b.toString();
+    }
 
     private static final LinkedList<Card> CARDS = new LinkedList<Card>();
 
@@ -44,7 +61,7 @@ public class Log {
     }
 
     public static void add(String text) {
-        String line = "[" + FMT.format(new Date()) + "] " + text;
+        String line = "[" + now() + "] " + text;
         synchronized (LIST) {
             LIST.addFirst(line);
             while (LIST.size() > 300) {
@@ -54,7 +71,7 @@ public class Log {
     }
 
     public static void card(String title, String detail, boolean ok) {
-        Card c = new Card(FMT.format(new Date()), title, detail, ok);
+        Card c = new Card(now(), title, detail, ok);
         synchronized (CARDS) {
             CARDS.addFirst(c);
             while (CARDS.size() > 20) {

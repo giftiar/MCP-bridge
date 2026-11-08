@@ -25,7 +25,7 @@ import org.json.JSONObject;
 public class Mcp {
 
     public static final String PROTOCOL = "2024-11-05";
-    public static final String VERSION = "0.1.0";
+    public static final String VERSION = "1.0.0";
     public static final String VERSION_TEXT = VERSION;
     public static final String PROTOCOL_TEXT = PROTOCOL;
 
@@ -167,6 +167,12 @@ public class Mcp {
             if ("ping".equals(method)) {
                 return wrap(id, new JSONObject());
             }
+            if ("prompts/list".equals(method)) {
+                return wrap(id, promptsList());
+            }
+            if ("prompts/get".equals(method)) {
+                return wrap(id, promptsGet(req));
+            }
             return error(id, -32601, "method not found: " + method);
         } catch (Throwable t) {
             Log.add("请求异常: " + t);
@@ -187,6 +193,7 @@ public class Mcp {
         r.put("protocolVersion", pv);
         JSONObject caps = new JSONObject();
         caps.put("tools", new JSONObject());
+        caps.put("prompts", new JSONObject());
         r.put("capabilities", caps);
         JSONObject info = new JSONObject();
         info.put("name", Config.getName());
@@ -204,6 +211,114 @@ public class Mcp {
             + "Required when the target text matches uninstall/delete/pay style keywords.";
     private static String P_FORCE = "Retry an element already marked unusable (default false). "
             + "force never bypasses the danger-word guard.";
+
+    private static JSONObject promptsList() throws Exception {
+        JSONArray arr = new JSONArray();
+
+        arr.put(prompt("read_screen",
+                "看看现在屏幕上有什么",
+                "Take one look at the current screen and tell the user what is on it.",
+                new JSONObject[0]));
+
+        arr.put(prompt("find_and_tap",
+                "帮我在屏幕上找并点开某个东西",
+                "Locate the thing the user names on the current screen and open it safely.",
+                new JSONObject[]{
+                        promptArg("target", "要找的东西，例如「设置」", true)}));
+
+        arr.put(prompt("fill_text",
+                "在当前输入框里写一段话",
+                "Write the given text into whichever field currently has input focus.",
+                new JSONObject[]{
+                        promptArg("text", "要写入的内容", true)}));
+
+        arr.put(prompt("daily_checkin",
+                "每日签到",
+                "Run the user's daily check-in routine in the named app, step by step, "
+                        + "and stop if anything looks unexpected.",
+                new JSONObject[]{
+                        promptArg("app", "应用名称，例如「微信」", true)}));
+
+        arr.put(prompt("summarise_screen",
+                "把屏幕内容总结成几句话",
+                "Read the screen and summarise it in a few sentences for the user.",
+                new JSONObject[0]));
+
+        JSONObject r = new JSONObject();
+        r.put("prompts", arr);
+        return r;
+    }
+
+    private static JSONObject prompt(String name, String title, String desc,
+                                     JSONObject[] args) throws Exception {
+        JSONObject o = new JSONObject();
+        o.put("name", name);
+        o.put("title", title);
+        o.put("description", desc);
+        JSONArray a = new JSONArray();
+        for (JSONObject x : args) {
+            a.put(x);
+        }
+        o.put("arguments", a);
+        return o;
+    }
+
+    private static JSONObject promptArg(String name, String desc, boolean required)
+            throws Exception {
+        JSONObject o = new JSONObject();
+        o.put("name", name);
+        o.put("description", desc);
+        o.put("required", required);
+        return o;
+    }
+
+    private static JSONObject promptsGet(JSONObject req) throws Exception {
+        JSONObject params = req.optJSONObject("params");
+        String name = params == null ? "" : params.optString("name", "");
+        JSONObject args = params == null ? null : params.optJSONObject("arguments");
+        String a = args == null ? "" : args.optString("target", "");
+        String t = args == null ? "" : args.optString("text", "");
+        String app = args == null ? "" : args.optString("app", "");
+
+        String body;
+        if ("read_screen".equals(name)) {
+            body = "Look at my phone screen and tell me what is on it. "
+                    + "Use screen_snapshot first; if that is unavailable use ocr. "
+                    + "Do not tap anything.";
+        } else if ("find_and_tap".equals(name)) {
+            body = "On my phone, find \"" + a + "\" on the current screen and open it. "
+                    + "Snapshot first, confirm the element is really that thing, then tap once. "
+                    + "If it is ambiguous or looks dangerous, stop and ask me.";
+        } else if ("fill_text".equals(name)) {
+            body = "Type this into the input field that has focus right now: " + t
+                    + "\nIf nothing has focus, say so instead of guessing.";
+        } else if ("daily_checkin".equals(name)) {
+            body = "Do my daily check-in in " + app + ". "
+                    + "Work step by step, snapshot before each tap so you do not hit the wrong "
+                    + "thing, and stop immediately if a payment, install or permission dialog "
+                    + "appears. Report each step as you go.";
+        } else if ("summarise_screen".equals(name)) {
+            body = "Read my phone screen and summarise it in a few sentences. "
+                    + "Do not change anything on the screen.";
+        } else {
+            throw new Exception("unknown prompt: " + name);
+        }
+
+        JSONObject msg = new JSONObject();
+        msg.put("role", "user");
+        JSONObject content = new JSONObject();
+        content.put("type", "text");
+        content.put("text", body);
+        msg.put("content", content);
+
+        JSONArray msgs = new JSONArray();
+        msgs.put(msg);
+
+        JSONObject r = new JSONObject();
+        r.put("description", "prompt " + name);
+        r.put("messages", msgs);
+        return r;
+    }
 
     private static JSONObject toolsList() throws Exception {
         if (Config.isVdMode()) {
@@ -255,7 +370,8 @@ public class Mcp {
                         prop("y", "integer", "Y coordinate"),
                         prop("expect_rev", "integer", P_EXPECT),
                         prop("allow_stale", "boolean", P_STALE),
-                        prop("force", "boolean", P_FORCE)), null)));
+                        prop("force", "boolean", P_FORCE),
+                        prop("confirm_risk", "boolean", P_RISK)), null)));
 
         arr.put(tool("long_click",
                 "Long-presses by ref or x/y. Same parameters as click. "
@@ -266,7 +382,8 @@ public class Mcp {
                         prop("y", "integer", "Y coordinate"),
                         prop("expect_rev", "integer", P_EXPECT),
                         prop("allow_stale", "boolean", P_STALE),
-                        prop("force", "boolean", P_FORCE)), null)));
+                        prop("force", "boolean", P_FORCE),
+                        prop("confirm_risk", "boolean", P_RISK)), null)));
 
         arr.put(tool("set_text",
                 "Writes text into an editable field. Fails if the ref is not an input. "
@@ -322,7 +439,9 @@ public class Mcp {
                         + "page refreshed and refs went stale. Returns notfound when absent.",
                 schema(props(
                         prop("text", "string", "Text to tap, substring match"),
-                        prop("confirm_risk", "boolean", P_RISK)), required("text"))));
+                        prop("confirm_risk", "boolean", P_RISK),
+                        prop("expect_rev", "integer", P_EXPECT),
+                        prop("allow_stale", "boolean", P_STALE)), required("text"))));
 
         arr.put(tool("find_text",
                 "Searches the current screen for text without tapping. "
@@ -347,6 +466,7 @@ public class Mcp {
                         + "foreground and tells you when the system blocked it.",
                 schema(props(
                         prop("target", "string", "Package name or app label"),
+                        prop("expect_rev", "integer", P_EXPECT),
                         prop("allow_stale", "boolean", P_STALE)), required("target"))));
 
         arr.put(tool("list_apps", "Lists installed apps as label -> package name.", schema(null, null)));
@@ -355,6 +475,7 @@ public class Mcp {
                 "Opens a URL in the system browser. Read the page with screen_snapshot afterwards.",
                 schema(props(
                         prop("url", "string", "Full URL"),
+                        prop("expect_rev", "integer", P_EXPECT),
                         prop("allow_stale", "boolean", P_STALE)), required("url"))));
 
         arr.put(tool("current_app", "Shows which app is in the foreground and the current rev.",
@@ -403,7 +524,7 @@ public class Mcp {
     private static void applyRev(JSONObject a) {
         long er = a.optLong("expect_rev", -1L);
         if (er >= 0) {
-            Ui.lastRev = er;
+            Ui.setExpect(er);
         }
     }
 
@@ -411,12 +532,16 @@ public class Mcp {
         return a.optBoolean("allow_stale", false);
     }
 
-    private static final java.util.Set<String> READ_ONLY =
+    static final java.util.Set<String> READ_ONLY =
             new java.util.HashSet<String>(java.util.Arrays.asList(
                     "screen_snapshot", "ocr", "find_text", "current_app",
                     "server_status", "list_apps", "screen_info",
-                    "list_downloads", "self_test", "wait",
-                    "vd_info"));
+                    "list_downloads", "self_test", "wait", "wait_for_text",
+                    "vd_info", "read_focus_text", "set_status"));
+
+    static boolean isReadOnly(String name) {
+        return READ_ONLY.contains(name);
+    }
 
     private static String pausedBlockMsg(String tool) {
         StringBuilder b = new StringBuilder();
@@ -430,7 +555,7 @@ public class Mcp {
     }
 
     private static JSONObject call(Context ctx, String name, JSONObject a) throws Exception {
-        if (!READ_ONLY.contains(name) && Config.isPaused()) {
+        if (!isReadOnly(name) && Config.isPaused()) {
             return result(pausedBlockMsg(name), true);
         }
 
@@ -563,8 +688,9 @@ public class Mcp {
         }
 
         if ("click_text".equals(name)) {
+            applyRev(a);
             return result(Ui.clickText(a.optString("text", ""),
-                    a.optBoolean("confirm_risk", false)), false);
+                    a.optBoolean("confirm_risk", false), stale(a)), false);
         }
 
         if ("find_text".equals(name)) {
@@ -581,6 +707,7 @@ public class Mcp {
         }
 
         if ("open_app".equals(name)) {
+            applyRev(a);
             return result(Ui.openApp(a.optString("target", ""), stale(a)), false);
         }
 
@@ -589,6 +716,7 @@ public class Mcp {
         }
 
         if ("open_url".equals(name)) {
+            applyRev(a);
             return result(Ui.openUrl(a.optString("url", ""), stale(a)), false);
         }
 
@@ -634,18 +762,16 @@ public class Mcp {
             b.append("guard: ").append(Guard.ENABLED ? "on" : "off").append('\n');
             b.append("paused: ").append(Config.isPaused() ? "yes" : "no").append('\n');
             b.append("estop: ");
-            if (Config.isBallOn() && StopBar.isShown()) {
+            if (StopBar.isShown()) {
                 b.append("floating_ball (running)\n");
-            } else if (Config.isBallOn()) {
-                b.append("floating_ball (permission_ok, not_shown)\n");
             } else {
-                b.append("floating_ball (NOT_ENABLED - writes are dangerous)\n");
+                b.append("floating_ball (not_shown - grant overlay permission)\n");
             }
             b.append("running: ").append(HttpSrv.runningCount()).append(" ports\n");
             b.append("local: ").append(Net.urlLocal()).append('\n');
             b.append("lan: ").append(Net.urlLan()).append('\n');
             b.append("a11y: ").append(Ui.ready() ? "connected" : "disconnected").append('\n');
-            b.append("interval: ").append(Config.getInterval()).append("s");
+            b.append("interval: ").append(Config.getInterval()).append("ms");
             b.append(Config.getInterval() == 0 ? " (unlimited)" : "").append('\n');
             b.append("rev: ").append(A11ySvc.rev).append('\n');
             b.append("screen: ").append(Ui.screenInfo()).append('\n');

@@ -116,6 +116,28 @@ public class McpIme extends InputMethodService {
         return ei == null ? 0 : ei.inputType;
     }
 
+    public String[] readAround() {
+        InputConnection c = conn;
+        if (c == null) {
+            return null;
+        }
+        try {
+            CharSequence b = c.getTextBeforeCursor(2048, 0);
+            CharSequence a = c.getTextAfterCursor(2048, 0);
+            EditorInfo ei = info;
+            String hint = "";
+            if (ei != null && ei.hintText != null) {
+                hint = ei.hintText.toString();
+            }
+            return new String[]{
+                    b == null ? "" : b.toString(),
+                    a == null ? "" : a.toString(),
+                    hint};
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     public String describe() {
         InputConnection c = conn;
         if (c == null) {
@@ -182,8 +204,8 @@ public class McpIme extends InputMethodService {
                     android.view.KeyEvent.ACTION_DOWN,
                     android.view.KeyEvent.KEYCODE_ENTER));
             c.sendKeyEvent(new android.view.KeyEvent(
-                    android.view.KeyEvent.KEYCODE_ENTER,
-                    android.view.KeyEvent.ACTION_UP));
+                    android.view.KeyEvent.ACTION_UP,
+                    android.view.KeyEvent.KEYCODE_ENTER));
             return true;
         } catch (Throwable t) {
             return false;

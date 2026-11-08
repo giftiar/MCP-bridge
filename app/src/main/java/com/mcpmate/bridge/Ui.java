@@ -60,7 +60,12 @@ public class Ui {
     private static long lastAct = 0L;
     private static long lastSnapEnd = 0L;
     public static volatile long lastRev = -1L;
+    public static volatile long expectRev = -1L;
     public static volatile long lastSnapAt = 0L;
+
+    public static void setExpect(long rev) {
+        expectRev = rev;
+    }
 
     public static boolean ready() {
         return A11ySvc.inst != null;
@@ -183,6 +188,56 @@ public class Ui {
         return String.valueOf(b.toString().hashCode());
     }
 
+    private static java.util.List<Diff.Item> treeItems(AccessibilityService s) {
+        java.util.List<Diff.Item> out = new java.util.ArrayList<Diff.Item>();
+        try {
+            AccessibilityNodeInfo root = s.getRootInActiveWindow();
+            if (root != null) {
+                collectItems(root, out, screen(), 0, new int[]{0});
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    private static void collectItems(AccessibilityNodeInfo n,
+                                     java.util.List<Diff.Item> out, Rect scr,
+                                     int depth, int[] cnt) {
+        if (n == null || depth > 25 || cnt[0] > 300) {
+            return;
+        }
+        Rect r = new Rect();
+        try {
+            n.getBoundsInScreen(r);
+            if (onScreen(r, scr)) {
+                CharSequence t = n.getText();
+                String txt = t == null ? "" : t.toString().trim();
+                if (txt.length() == 0) {
+                    CharSequence d = n.getContentDescription();
+                    txt = d == null ? "" : d.toString().trim();
+                }
+                if (txt.length() > 0) {
+                    out.add(new Diff.Item(txt, r));
+                    cnt[0]++;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        int cc = 0;
+        try {
+            cc = n.getChildCount();
+        } catch (Throwable ignored) {
+        }
+        for (int i = 0; i < cc; i++) {
+            AccessibilityNodeInfo c = null;
+            try {
+                c = n.getChild(i);
+            } catch (Throwable ignored) {
+            }
+            collectItems(c, out, scr, depth + 1, cnt);
+        }
+    }
+
     private static void fpWalk(AccessibilityNodeInfo n, StringBuilder b, Rect scr,
                                int depth, int[] cnt) {
         if (n == null || depth > 30 || cnt[0] > 400) {
@@ -264,11 +319,22 @@ public class Ui {
 
         appendWindows(info, s);
 
+        try {
+            Diff.remember(treeItems(s));
+        } catch (Throwable ignored) {
+        }
+
         String evts = A11ySvc.eventsSince(lastSnapAt);
         lastSnapAt = System.currentTimeMillis();
         lastRev = A11ySvc.rev;
 
         synchronized (CACHE) {
+            for (AccessibilityNodeInfo old : CACHE) {
+                try {
+                    old.recycle();
+                } catch (Throwable ignored) {
+                }
+            }
             CACHE.clear();
         }
 
@@ -864,13 +930,6 @@ public class Ui {
                 + "you can also pick another element or wait for the user.\n";
     }
 
-    private static boolean pausedBlock(String action) {
-        if (!Config.isPaused()) {
-            return false;
-        }
-        return true;
-    }
-
     private static String pausedMsg(String action) {
         StringBuilder b = new StringBuilder();
         b.append("paused\neffect: none\naction: ").append(action).append('\n');
@@ -895,16 +954,19 @@ public class Ui {
 
 
     private static String revCheck(boolean allowStale) {
-        if (allowStale || lastRev < 0) {
+        long er = expectRev;
+        expectRev = -1L;
+        long base = er >= 0 ? er : lastRev;
+        if (allowStale || base < 0) {
             return null;
         }
-        if (A11ySvc.rev == lastRev) {
+        if (A11ySvc.rev == base) {
             return null;
         }
         StringBuilder b = new StringBuilder();
         b.append("stale\n");
         b.append("effect: none\n");
-        b.append("rev: ").append(lastRev).append(" -> ").append(A11ySvc.rev).append('\n');
+        b.append("rev: ").append(base).append(" -> ").append(A11ySvc.rev).append('\n');
         b.append("reason: the screen changed after your last snapshot\n");
         b.append("hint: the action was refused to avoid hitting the wrong target. ")
                 .append("call screen_snapshot again and retry with the new refs.\n");
@@ -974,6 +1036,19 @@ public class Ui {
             b.append("target: ").append(detail).append('\n');
         }
         b.append("effect: ").append(changed ? "changed" : "unchanged").append('\n');
+        if (changed) {
+            try {
+                AccessibilityService s = A11ySvc.inst;
+                if (s != null) {
+                    Rect scr2 = screen();
+                    String d = Diff.report(treeItems(s), scr2.width(), scr2.height());
+                    if (d.length() > 0) {
+                        b.append(d);
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         String method = methodText(inline);
         if (method != null) {
             b.append("method: ").append(method).append('\n');
@@ -1054,6 +1129,9 @@ public class Ui {
         }
         if ("gesture:swipe".equals(inline)) {
             return "手势滑动";
+        }
+        if ("gesture:drag".equals(inline)) {
+            return "手势拖拽";
         }
         if ("gesture:longpress".equals(inline)) {
             return "手势长按";
@@ -1644,12 +1722,11 @@ public class Ui {
     }
 
 
-    public static String clickText(String keyword, boolean confirmRisk) {
-        if (!ready()) {
-            return "ERROR: 无障碍服务未开启";
-        }
-        if (Config.isPaused()) {
-            return pausedMsg("click_text");
+    public static String clickText(String keyword, boolean confirmRisk,
+                                   boolean allowStale) {
+        String pre = prepare("click_text", allowStale);
+        if (pre != null) {
+            return pre;
         }
         AccessibilityService s = A11ySvc.inst;
         AccessibilityNodeInfo root = null;
@@ -2071,13 +2148,11 @@ public class Ui {
     }
 
     public static String openApp(String key, boolean allowStale) {
+        String pre = prepare("open_app", allowStale);
+        if (pre != null) {
+            return pre;
+        }
         AccessibilityService s = A11ySvc.inst;
-        if (s == null) {
-            return "ERROR: 无障碍服务未开启";
-        }
-        if (Config.isPaused()) {
-            return pausedMsg("open_app");
-        }
         Context ctx = s.getApplicationContext();
         PackageManager pm = ctx.getPackageManager();
 
@@ -2154,13 +2229,11 @@ public class Ui {
     }
 
     public static String openUrl(String url, boolean allowStale) {
+        String pre = prepare("open_url", allowStale);
+        if (pre != null) {
+            return pre;
+        }
         AccessibilityService s = A11ySvc.inst;
-        if (s == null) {
-            return "ERROR: 无障碍服务未开启";
-        }
-        if (Config.isPaused()) {
-            return pausedMsg("open_url");
-        }
         if (url == null || url.length() == 0) {
             return "ERROR: url 不能为空";
         }

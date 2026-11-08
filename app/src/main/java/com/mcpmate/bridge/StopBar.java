@@ -93,22 +93,31 @@ public class StopBar {
         }
     }
 
-    private static void syncRect(Context c, WindowManager.LayoutParams lp, int sizePx) {
-        int sw = 0;
+    static int[] realSize(Context c) {
+        int w = 0;
+        int h = 0;
         try {
             Display d = ((WindowManager) c.getSystemService(Context.WINDOW_SERVICE))
                     .getDefaultDisplay();
             Point p = new Point();
             d.getRealSize(p);
-            sw = p.x;
+            w = p.x;
+            h = p.y;
         } catch (Throwable ignored) {
         }
-        if (sw <= 0) {
+        if (w <= 0 || h <= 0) {
             try {
-                sw = c.getResources().getDisplayMetrics().widthPixels;
+                android.util.DisplayMetrics dm = c.getResources().getDisplayMetrics();
+                w = dm.widthPixels;
+                h = dm.heightPixels;
             } catch (Throwable ignored) {
             }
         }
+        return new int[]{w, h};
+    }
+
+    private static void syncRect(Context c, WindowManager.LayoutParams lp, int sizePx) {
+        int sw = realSize(c)[0];
         if (sw <= 0) {
             return;
         }
@@ -192,8 +201,7 @@ public class StopBar {
             box.addView(t, tp);
 
             int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                    | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
             int type = Build.VERSION.SDK_INT >= 26
                     ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                     : WindowManager.LayoutParams.TYPE_PHONE;
@@ -201,8 +209,17 @@ public class StopBar {
             final WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     sizePx, sizePx, type, flags, PixelFormat.TRANSLUCENT);
             lp.gravity = Gravity.TOP | Gravity.END;
-            lp.x = dp(app, 12);
-            lp.y = dp(app, 132);
+
+            final int[] lim = new int[]{0, 0};
+            int[] sz0 = realSize(app);
+            lim[0] = Math.max(0, sz0[0] - sizePx);
+            lim[1] = Math.max(0, sz0[1] - sizePx);
+
+            int sx = Config.getStopX();
+            int sy = Config.getStopY();
+            lp.x = sx < 0 ? dp(app, 12) : Math.min(sx, lim[0]);
+            lp.y = sy < 0 ? dp(app, 132) : Math.min(sy, lim[1]);
+            Config.setStopPos(lp.x, lp.y);
 
             box.setOnTouchListener(new View.OnTouchListener() {
                 float downX;
@@ -215,6 +232,23 @@ public class StopBar {
                 public boolean onTouch(View host, MotionEvent e) {
                     int act = e.getActionMasked();
                     if (act == MotionEvent.ACTION_DOWN) {
+                        int[] sz = realSize(app);
+                        lim[0] = Math.max(0, sz[0] - sizePx);
+                        lim[1] = Math.max(0, sz[1] - sizePx);
+                        if (lp.x > lim[0] || lp.y > lim[1]) {
+                            if (lp.x > lim[0]) {
+                                lp.x = lim[0];
+                            }
+                            if (lp.y > lim[1]) {
+                                lp.y = lim[1];
+                            }
+                            try {
+                                wm.updateViewLayout(host, lp);
+                            } catch (Throwable ignored) {
+                            }
+                            Config.setStopPos(lp.x, lp.y);
+                            syncRect(app, lp, sizePx);
+                        }
                         downX = e.getRawX();
                         downY = e.getRawY();
                         startX = lp.x;
@@ -235,8 +269,14 @@ public class StopBar {
                             if (lp.x < 0) {
                                 lp.x = 0;
                             }
+                            if (lp.x > lim[0]) {
+                                lp.x = lim[0];
+                            }
                             if (lp.y < 0) {
                                 lp.y = 0;
+                            }
+                            if (lp.y > lim[1]) {
+                                lp.y = lim[1];
                             }
                             try {
                                 wm.updateViewLayout(host, lp);
@@ -249,6 +289,9 @@ public class StopBar {
                     if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
                         if (!dragging) {
                             toggle(app);
+                        } else {
+                            Config.setStopPos(lp.x, lp.y);
+                            syncRect(app, lp, sizePx);
                         }
                         return true;
                     }
@@ -289,10 +332,36 @@ public class StopBar {
     }
 
     private static void toggle(Context app) {
-        boolean nowPaused = !Config.isPaused();
+        setPaused(app, !Config.isPaused(), true);
+    }
+
+    public static void setPaused(Context app, boolean nowPaused, boolean toast) {
         Config.setPaused(nowPaused);
         String msg = nowPaused ? "已急停：AI 的所有操作已被阻止" : "已恢复：允许 AI 操作";
         Log.add(msg);
+        repaint(app, nowPaused);
+        try {
+            Notif.alert(app, nowPaused);
+        } catch (Throwable ignored) {
+        }
+        try {
+            BridgeService.refreshPaused();
+        } catch (Throwable ignored) {
+        }
+        try {
+            InfoBar.render(null);
+        } catch (Throwable ignored) {
+        }
+        if (toast) {
+            try {
+                android.widget.Toast.makeText(app, msg,
+                        android.widget.Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    static void repaint(Context app, boolean nowPaused) {
         try {
             if (root != null) {
                 root.setBackground(new RippleDrawable(
@@ -303,15 +372,6 @@ public class StopBar {
                 label.setText(nowPaused ? "续" : "停");
                 label.setContentDescription(desc());
             }
-        } catch (Throwable ignored) {
-        }
-        try {
-            Notif.alert(app, nowPaused);
-        } catch (Throwable ignored) {
-        }
-        try {
-            android.widget.Toast.makeText(app, msg,
-                    android.widget.Toast.LENGTH_LONG).show();
         } catch (Throwable ignored) {
         }
     }

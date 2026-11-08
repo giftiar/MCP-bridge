@@ -57,15 +57,24 @@ public class VdTools {
                 .append("if it still fails, the app cannot accept typed text on this display ")
                 .append("and you must report it as unsupported.\n\n");
 
-        b.append("NOT AVAILABLE\n")
-                .append("There are no back or home keys. There is no clipboard. ")
-                .append("To leave an app, use open_app for the next one.\n\n");
+        b.append("KEYS\n")
+                .append("Use press_key for back, home, recents, enter, backspace, menu and ")
+                .append("volume. power is accepted but locks the real phone, so avoid it.\n")
+                .append("There is no clipboard on this display.\n\n")
+                .append("SAFETY\n")
+                .append("Clicks landing on a danger word (delete, pay, uninstall, allow, ")
+                .append("install and similar) are refused. ocr first so the guard can see the ")
+                .append("text, and pass confirm_risk only when the user explicitly asked for ")
+                .append("that exact action.\n\n");
 
         b.append("WORKFLOW\n")
                 .append("Call vd_info first to confirm the display is ready and to learn its ")
-                .append("bounds. Then ocr, act once, and ocr again.\n")
-                .append("If the display is unchanged after an action, do not repeat the same ")
-                .append("coordinates; re-read first.\n")
+                .append("bounds. Then ocr once and act.\n")
+                .append("Every action returns the current text with centres, so you normally ")
+                .append("do not need to call ocr again between steps.\n")
+                .append("Actions re-read the screen before acting. If the content at the point ")
+                .append("changed since you last looked, the action is refused and you get the ")
+                .append("current text list; pick a new centre instead of retrying the old one.\n")
                 .append("Call wait only when content is clearly still loading.\n");
 
         return b.toString();
@@ -84,15 +93,26 @@ public class VdTools {
 
         JSONObject pointProps = props(
                 prop("x", "integer", "X coordinate"),
-                prop("y", "integer", "Y coordinate"));
+                prop("y", "integer", "Y coordinate"),
+                prop("expect", "string",
+                        "Text you believe sits at this point. The tap is refused when the "
+                                + "screen moved and something else is there now."),
+                prop("allow_stale", "boolean",
+                        "Skip the stale check for this one tap (default false)."),
+                prop("confirm_risk", "boolean",
+                        "Skip the danger-word guard for this one tap. Only use it when the "
+                                + "user explicitly asked for this exact action."));
         JSONArray pointReq = required("x", "y");
 
         arr.put(tool("click",
-                "Taps a point on the virtual display.",
+                "Taps a point on the virtual display. The screen is re-read first: if the "
+                        + "content at that point no longer matches what you saw, nothing is "
+                        + "tapped and the current text list is returned. Danger words are "
+                        + "refused unless confirm_risk is true.",
                 schema(pointProps, pointReq)));
 
         arr.put(tool("long_click",
-                "Long-presses a point on the virtual display.",
+                "Long-presses a point on the virtual display. Same checks as click.",
                 schema(pointProps, pointReq)));
 
         JSONArray lineReq = required("x1", "y1", "x2", "y2");
@@ -102,9 +122,12 @@ public class VdTools {
                 prop("y1", "integer", "Start Y"),
                 prop("x2", "integer", "End X"),
                 prop("y2", "integer", "End Y"),
-                prop("duration", "integer", "Duration in ms, default 600"));
+                prop("duration", "integer", "Duration in ms, default 600"),
+                prop("allow_stale", "boolean",
+                        "Skip the stale check on the start point (default false)."));
         arr.put(tool("swipe",
-                "Swipes between two points on the virtual display.",
+                "Swipes between two points on the virtual display. The start point is "
+                        + "verified against the current screen first.",
                 schema(swipeProps, lineReq)));
 
         JSONObject dragProps = props(
@@ -130,16 +153,34 @@ public class VdTools {
                         required("text"))));
 
         arr.put(tool("open_app",
-                "Opens an app on the virtual display by package name or label.",
+                "Opens an app on the virtual display by package name or label. "
+                        + "The display is resized automatically when the app declares a fixed "
+                        + "portrait or landscape orientation, so no manual rotation is needed.",
                 schema(props(prop("target", "string", "Package name or app label")),
                         required("target"))));
 
         arr.put(tool("list_apps", "Lists installed apps as label -> package name.",
                 schema(props(), null)));
 
+        arr.put(tool("read_focus_text",
+                "Reads the text currently inside the focused input field, plus the field hint. "
+                        + "Use it to see what is already typed before replacing it.",
+                schema(props(), null)));
+
+        arr.put(tool("press_key",
+                "Sends a system key to the virtual display. Use it for back, home, recents "
+                        + "and enter instead of hunting for an on-screen button.",
+                schema(props(prop("key", "string",
+                        "back, home, recents, enter, backspace, menu, power, "
+                                + "volume_up or volume_down")),
+                        required("key"))));
+
         arr.put(tool("vd_rotate",
-                "Changes the virtual display orientation and recreates its surface. "
-                        + "The display also follows the foreground app automatically.",
+                "Swaps the virtual display size between portrait and landscape. "
+                        + "Use it when an app is letterboxed into a narrow strip with large "
+                        + "black bars above and below: those apps declare a fixed landscape "
+                        + "orientation, such as TV builds and games. After rotating, call ocr "
+                        + "again because every coordinate changed.",
                 schema(props(prop("landscape", "boolean",
                         "true for landscape, false for portrait")))));
 
@@ -157,27 +198,7 @@ public class VdTools {
         return out;
     }
 
-    private static final java.util.Set<String> READ_ONLY =
-            new java.util.HashSet<String>(java.util.Arrays.asList(
-                    "vd_info", "ocr", "list_apps", "wait"));
-
-    private static String pausedMsg(String action) {
-        StringBuilder b = new StringBuilder();
-        b.append("paused\neffect: none\naction: ").append(action).append('\n');
-        b.append("reason: the user pressed the emergency stop, all actions are paused\n");
-        b.append("hint: stop immediately. do not retry, do not switch tools to work around ")
-                .append("it. wait until the user resumes on the phone.\n");
-        b.append("still_available: vd_info, ocr, list_apps, wait. read-only tools still ")
-                .append("work.\n");
-        b.append("resume: ask the user to tap the floating ball and continue once resumed.\n");
-        return b.toString();
-    }
-
     static JSONObject call(Context ctx, String name, JSONObject a) throws Exception {
-        if (!READ_ONLY.contains(name) && Config.isPaused()) {
-            return result(pausedMsg(name), true);
-        }
-
         if ("vd_info".equals(name)) {
             return result(state(ctx), false);
         }
@@ -186,8 +207,11 @@ public class VdTools {
             if (!state(ctx).startsWith("ready")) {
                 return result("ERROR: " + state(ctx), true);
             }
-            return result(VdMgr.rotate(a.optBoolean("landscape", true))
-                    + "\nCall ocr again; coordinates changed.", false);
+            String rr = VdMgr.rotate(a.optBoolean("landscape", true));
+            cachedSize = null;
+            Overlay.clearAction();
+            Diff.clear();
+            return result(rr + "\nCall ocr again; coordinates changed.", false);
         }
 
         if ("wait".equals(name)) {
@@ -215,11 +239,37 @@ public class VdTools {
         }
 
         if ("click".equals(name)) {
-            return result(VdMgr.click(a.optInt("x", -1), a.optInt("y", -1)), false);
+            int cx = a.optInt("x", -1);
+            int cy = a.optInt("y", -1);
+            String pre = preAction(cx, cy, a.optString("expect", ""),
+                    a.optBoolean("allow_stale", false),
+                    a.optBoolean("confirm_risk", false));
+            if (pre != null) {
+                return result(pre, true);
+            }
+            String r = VdMgr.click(cx, cy);
+            if (r.startsWith("OK")) {
+                int[] sz = vdSize();
+                Overlay.markClick(cx, cy, sz[0], sz[1]);
+            }
+            return result(r + diffSuffix(ctx), !r.startsWith("OK"));
         }
 
         if ("long_click".equals(name)) {
-            return result(VdMgr.longClick(a.optInt("x", -1), a.optInt("y", -1)), false);
+            int cx = a.optInt("x", -1);
+            int cy = a.optInt("y", -1);
+            String pre = preAction(cx, cy, a.optString("expect", ""),
+                    a.optBoolean("allow_stale", false),
+                    a.optBoolean("confirm_risk", false));
+            if (pre != null) {
+                return result(pre, true);
+            }
+            String r = VdMgr.longClick(cx, cy);
+            if (r.startsWith("OK")) {
+                int[] sz = vdSize();
+                Overlay.markClick(cx, cy, sz[0], sz[1]);
+            }
+            return result(r + diffSuffix(ctx), !r.startsWith("OK"));
         }
 
         if ("swipe".equals(name)) {
@@ -227,8 +277,21 @@ public class VdTools {
             if (dur < 100) {
                 dur = 100;
             }
-            return result(VdMgr.swipe(a.optInt("x1", -1), a.optInt("y1", -1),
-                    a.optInt("x2", -1), a.optInt("y2", -1), dur), false);
+            int x1 = a.optInt("x1", -1);
+            int y1 = a.optInt("y1", -1);
+            int x2 = a.optInt("x2", -1);
+            int y2 = a.optInt("y2", -1);
+            String pre = preAction(x1, y1, "",
+                    a.optBoolean("allow_stale", false), true);
+            if (pre != null) {
+                return result(pre, true);
+            }
+            String r = VdMgr.swipe(x1, y1, x2, y2, dur);
+            if (r.startsWith("OK")) {
+                int[] sz = vdSize();
+                Overlay.markSwipe(x1, y1, x2, y2, sz[0], sz[1]);
+            }
+            return result(r + diffSuffix(ctx), !r.startsWith("OK"));
         }
 
         if ("long_drag".equals(name)) {
@@ -240,12 +303,25 @@ public class VdTools {
             if (dur < 200) {
                 dur = 200;
             }
-            return result(VdMgr.drag(a.optInt("x1", -1), a.optInt("y1", -1),
-                    a.optInt("x2", -1), a.optInt("y2", -1), hold, dur), false);
+            int x1 = a.optInt("x1", -1);
+            int y1 = a.optInt("y1", -1);
+            int x2 = a.optInt("x2", -1);
+            int y2 = a.optInt("y2", -1);
+            String pre = preAction(x1, y1, "",
+                    a.optBoolean("allow_stale", false), true);
+            if (pre != null) {
+                return result(pre, true);
+            }
+            String r = VdMgr.drag(x1, y1, x2, y2, hold, dur);
+            if (r.startsWith("OK")) {
+                int[] sz = vdSize();
+                Overlay.markSwipe(x1, y1, x2, y2, sz[0], sz[1]);
+            }
+            return result(r + diffSuffix(ctx), !r.startsWith("OK"));
         }
 
         if ("type_text".equals(name)) {
-            return typeText(a);
+            return typeText(a, ctx);
         }
 
         if ("open_app".equals(name)) {
@@ -260,17 +336,40 @@ public class VdTools {
                     return result("ERROR: no app matches " + target, true);
                 }
             }
-            return result(VdMgr.startApp(pkg) + "\nOpened. Call ocr to read it.", false);
+            String sr = VdMgr.startApp(pkg);
+            Overlay.clearAction();
+            Diff.clear();
+            sleepQuiet(600L);
+            return result(sr + "\nOpened." + diffSuffix(ctx), !sr.startsWith("OK"));
         }
 
         if ("list_apps".equals(name)) {
             return result(listApps(ctx), false);
         }
 
+        if ("read_focus_text".equals(name)) {
+            return readFocusText();
+        }
+
+        if ("press_key".equals(name)) {
+            String k = a.optString("key", "").trim().toLowerCase(java.util.Locale.US);
+            int code = keyCode(k);
+            if (code <= 0) {
+                return result("ERROR: unknown key " + k
+                        + ". use back, home, recents, enter, backspace, menu, power, "
+                        + "volume_up or volume_down.", true);
+            }
+            String r = VdMgr.key(code);
+            if (r.startsWith("OK")) {
+                Overlay.clearAction();
+            }
+            return result(r + diffSuffix(ctx), !r.startsWith("OK"));
+        }
+
         return result("ERROR: unknown tool " + name, true);
     }
 
-    private static JSONObject typeText(JSONObject a) throws Exception {
+    private static JSONObject typeText(JSONObject a, Context ctx) throws Exception {
         String text = a.optString("text", "");
         if (text.length() == 0) {
             return result("ERROR: empty text", true);
@@ -317,8 +416,8 @@ public class VdTools {
                 ime.sendEnter();
                 b.append("enter sent\n");
             }
-            b.append("Call ocr to confirm the field content.");
-            return result(b.toString(), false);
+            sleepQuiet(250L);
+            return result(b.toString() + diffSuffix(ctx), false);
         } finally {
             if (switched) {
                 sleepQuiet(120L);
@@ -375,6 +474,11 @@ public class VdTools {
             }
         }
 
+        rememberLines(lines);
+        Diff.remember(items(lines));
+        int[] osz = vdSize();
+        Overlay.boxes(lines, osz[0], osz[1]);
+
         if (lines.isEmpty()) {
             cap.append("No text recognised. The display may be blank or icon only.\n");
         } else {
@@ -388,6 +492,374 @@ public class VdTools {
             return image(img[0], "image/jpeg", cap.toString());
         }
         return result(cap.toString(), false);
+    }
+
+    private static JSONObject readFocusText() throws Exception {
+        McpIme ime = McpIme.inst;
+        boolean switched = false;
+        if (ime == null || !ime.hasConnection()) {
+            String act = VdMgr.activateIme();
+            if (act.startsWith("FAIL")) {
+                return result("ERROR: " + act, true);
+            }
+            switched = true;
+            long deadline = System.currentTimeMillis() + 3500L;
+            while (System.currentTimeMillis() < deadline) {
+                sleepQuiet(150L);
+                McpIme m = McpIme.inst;
+                if (m != null && m.hasConnection()) {
+                    break;
+                }
+            }
+            ime = McpIme.inst;
+        }
+        try {
+            if (ime == null || !ime.hasConnection()) {
+                return result("no_connection: nothing on the virtual display holds input "
+                        + "focus. Tap the field first.\nime_event: " + McpIme.lastEvent, true);
+            }
+            String[] r = ime.readAround();
+            if (r == null) {
+                return result("ERROR: the field refused to return its text\nime_event: "
+                        + McpIme.lastEvent, true);
+            }
+            StringBuilder b = new StringBuilder();
+            b.append("inputType: ").append(ime.inputType()).append('\n');
+            if (r[2].length() > 0) {
+                b.append("hint: ").append(r[2]).append('\n');
+            }
+            b.append("before_cursor: ").append(r[0]).append('\n');
+            b.append("after_cursor: ").append(r[1]).append('\n');
+            if (r[0].length() == 0 && r[1].length() == 0) {
+                b.append("note: the field is empty\n");
+            }
+            return result(b.toString(), false);
+        } finally {
+            if (switched) {
+                sleepQuiet(120L);
+                VdMgr.deactivateIme();
+            }
+        }
+    }
+
+    private static volatile int[] cachedSize;
+
+    private static int[] vdSize() {
+        int w = Config.getVdW();
+        int h = Config.getVdH();
+        if (w > 0 && h > 0) {
+            return new int[]{w, h};
+        }
+        int[] c = cachedSize;
+        if (c != null && c[0] > 0 && c[1] > 0) {
+            return c;
+        }
+        int[] p = parseSize(VdMgr.info());
+        if (p != null) {
+            cachedSize = p;
+            return p;
+        }
+        return new int[]{0, 0};
+    }
+
+    private static int[] parseSize(String s) {
+        if (s == null) {
+            return null;
+        }
+        int w = field(s, "width=");
+        int h = field(s, "height=");
+        if (w > 100 && h > 100) {
+            return new int[]{w, h};
+        }
+        return parseWxH(s);
+    }
+
+    private static int field(String s, String key) {
+        int i = s.indexOf(key);
+        if (i < 0) {
+            return -1;
+        }
+        i += key.length();
+        int j = i;
+        while (j < s.length() && Character.isDigit(s.charAt(j))) {
+            j++;
+        }
+        if (j == i) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(s.substring(i, j));
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    private static int[] parseWxH(String s) {
+        if (s == null) {
+            return null;
+        }
+        try {
+            int i = 0;
+            while (i < s.length()) {
+                if (!Character.isDigit(s.charAt(i))) {
+                    i++;
+                    continue;
+                }
+                int start = i;
+                while (i < s.length() && Character.isDigit(s.charAt(i))) {
+                    i++;
+                }
+                if (i >= s.length() || s.charAt(i) != 'x') {
+                    continue;
+                }
+                int wv = Integer.parseInt(s.substring(start, i));
+                int j = i + 1;
+                int ds = j;
+                while (j < s.length() && Character.isDigit(s.charAt(j))) {
+                    j++;
+                }
+                if (j == ds) {
+                    continue;
+                }
+                int hv = Integer.parseInt(s.substring(ds, j));
+                if (wv > 100 && hv > 100) {
+                    return new int[]{wv, hv};
+                }
+                i = j;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static int keyCode(String k) {
+        if ("back".equals(k)) {
+            return android.view.KeyEvent.KEYCODE_BACK;
+        }
+        if ("home".equals(k)) {
+            return android.view.KeyEvent.KEYCODE_HOME;
+        }
+        if ("recents".equals(k)) {
+            return android.view.KeyEvent.KEYCODE_APP_SWITCH;
+        }
+        if ("enter".equals(k)) {
+            return android.view.KeyEvent.KEYCODE_ENTER;
+        }
+        if ("backspace".equals(k)) {
+            return android.view.KeyEvent.KEYCODE_DEL;
+        }
+        if ("menu".equals(k)) {
+            return android.view.KeyEvent.KEYCODE_MENU;
+        }
+        if ("power".equals(k)) {
+            return android.view.KeyEvent.KEYCODE_POWER;
+        }
+        if ("volume_up".equals(k)) {
+            return android.view.KeyEvent.KEYCODE_VOLUME_UP;
+        }
+        if ("volume_down".equals(k)) {
+            return android.view.KeyEvent.KEYCODE_VOLUME_DOWN;
+        }
+        return -1;
+    }
+
+    private static java.util.List<Diff.Item> items(java.util.List<Ocr.Line> lines) {
+        java.util.List<Diff.Item> out = new java.util.ArrayList<Diff.Item>();
+        if (lines == null) {
+            return out;
+        }
+        for (int i = 0; i < lines.size(); i++) {
+            Ocr.Line ln = lines.get(i);
+            out.add(new Diff.Item(ln.text, ln.r));
+        }
+        return out;
+    }
+
+    private static volatile java.util.List<Ocr.Line> lastLines =
+            new java.util.ArrayList<Ocr.Line>();
+
+    private static void rememberLines(java.util.List<Ocr.Line> lines) {
+        lastLines = lines == null ? new java.util.ArrayList<Ocr.Line>() : lines;
+    }
+
+    private static String textAt(java.util.List<Ocr.Line> lines, int x, int y) {
+        if (lines == null || lines.isEmpty()) {
+            return null;
+        }
+        String best = null;
+        int bestArea = Integer.MAX_VALUE;
+        for (int i = 0; i < lines.size(); i++) {
+            Ocr.Line ln = lines.get(i);
+            if (ln.r.contains(x, y)) {
+                int area = ln.r.width() * ln.r.height();
+                if (area < bestArea) {
+                    bestArea = area;
+                    best = ln.text;
+                }
+            }
+        }
+        return best;
+    }
+
+    private static boolean similar(String a, String b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        String x = a.replaceAll("\\s+", "");
+        String y = b.replaceAll("\\s+", "");
+        if (x.equals(y)) {
+            return true;
+        }
+        if (x.length() == 0 || y.length() == 0) {
+            return false;
+        }
+        if (x.contains(y) || y.contains(x)) {
+            return true;
+        }
+        boolean[] used = new boolean[y.length()];
+        int common = 0;
+        for (int i = 0; i < x.length(); i++) {
+            char c = x.charAt(i);
+            for (int j = 0; j < y.length(); j++) {
+                if (!used[j] && y.charAt(j) == c) {
+                    used[j] = true;
+                    common++;
+                    break;
+                }
+            }
+        }
+        return common * 2 >= Math.min(x.length(), y.length());
+    }
+
+    private static String textList(java.util.List<Ocr.Line> lines) {
+        StringBuilder b = new StringBuilder();
+        b.append("--- current text, tap by these centres ---\n");
+        b.append(Ocr.describe(lines, 40));
+        return b.toString();
+    }
+
+    private static String preAction(int x, int y, String expect,
+                                    boolean allowStale, boolean skipGuard) {
+        java.util.List<Ocr.Line> before = lastLines;
+        java.util.List<Ocr.Line> fresh = null;
+        try {
+            fresh = snapshot(null);
+        } catch (Throwable ignored) {
+        }
+        if (fresh == null || fresh.isEmpty()) {
+            return null;
+        }
+
+        int[] sz = vdSize();
+        rememberLines(fresh);
+        Overlay.boxes(fresh, sz[0], sz[1]);
+        if (Config.isDiffOn()) {
+            Diff.remember(items(fresh));
+        }
+
+        String now = textAt(fresh, x, y);
+
+        if (!skipGuard && Guard.ENABLED) {
+            String w = Guard.hitHard(now);
+            if (w != null) {
+                return Guard.blocked(w, "\"" + now + "\" at " + x + "," + y);
+            }
+        }
+
+        if (expect != null && expect.trim().length() > 0) {
+            if (now == null || !similar(expect.trim(), now)) {
+                StringBuilder b = new StringBuilder();
+                b.append("stale\neffect: none, nothing was tapped\n");
+                b.append("reason: you asked to tap \"").append(expect)
+                        .append("\" but that is not at ").append(x).append(',').append(y)
+                        .append(" any more\n");
+                b.append("found there: ")
+                        .append(now == null ? "no text" : "\"" + now + "\"").append('\n');
+                b.append("hint: do not retry the same coordinates. pick a centre from ")
+                        .append("the list below.\n");
+                b.append(textList(fresh));
+                return b.toString();
+            }
+            return null;
+        }
+
+        if (allowStale || before == null || before.isEmpty()) {
+            return null;
+        }
+        String was = textAt(before, x, y);
+        if (was == null || was.length() == 0) {
+            return null;
+        }
+        if (now != null && similar(was, now)) {
+            return null;
+        }
+        StringBuilder b = new StringBuilder();
+        b.append("stale\neffect: none, nothing was tapped\n");
+        b.append("reason: the content at ").append(x).append(',').append(y)
+                .append(" changed after you last read the screen\n");
+        b.append("you were about to tap: \"").append(was).append("\"\n");
+        b.append("now at that point: ")
+                .append(now == null ? "no text" : "\"" + now + "\"").append('\n');
+        b.append("hint: the screen moved or loaded. do not guess coordinates again; ")
+                .append("use a centre from the list below, or pass allow_stale=true ")
+                .append("if you are certain.\n");
+        b.append(textList(fresh));
+        return b.toString();
+    }
+
+    private static java.util.List<Ocr.Line> snapshot(Context ctx) {
+        byte[] png = VdMgr.capture();
+        if (png == null || png.length == 0) {
+            return null;
+        }
+        java.util.List<Ocr.Line> lines = new java.util.ArrayList<Ocr.Line>();
+        String[] note = new String[]{null};
+        String[] img = new String[]{null};
+        if (!Ui.ocrPng(png, false, false, lines, note, img)) {
+            return null;
+        }
+        return lines;
+    }
+
+    private static String diffSuffix(Context ctx) {
+        if (!Config.isDiffOn()) {
+            return "";
+        }
+        java.util.List<Ocr.Line> lines = null;
+        String fail = null;
+        try {
+            lines = snapshot(ctx);
+        } catch (Throwable t) {
+            fail = t.getClass().getSimpleName();
+        }
+        if (lines == null) {
+            return "\ndiff_unavailable: " + (fail == null ? "no frame" : fail)
+                    + "  (capture or OCR failed; call ocr to verify before acting)";
+        }
+
+        int[] sz = vdSize();
+        boolean fresh = !Diff.ready();
+        String d;
+        if (fresh) {
+            Diff.remember(items(lines));
+            d = "screen: baseline_set (first observation, no delta yet)";
+        } else {
+            d = Diff.report(items(lines), sz[0], sz[1]);
+        }
+
+        rememberLines(lines);
+        Overlay.boxes(lines, sz[0], sz[1]);
+
+        StringBuilder b = new StringBuilder();
+        b.append('\n').append(d);
+        if (!d.endsWith("\n")) {
+            b.append('\n');
+        }
+        if (!lines.isEmpty()) {
+            b.append("--- current text, tap by these centres ---\n");
+            b.append(Ocr.describe(lines, 40));
+        }
+        return b.toString();
     }
 
     static String state(Context ctx) {
@@ -413,9 +885,12 @@ public class VdTools {
         StringBuilder b = new StringBuilder();
         b.append("ready  displayId=").append(id)
                 .append("  size=").append(w).append('x').append(h)
-                .append("  dpi=").append(dpi).append('\n');
+                .append("  dpi=").append(dpi)
+                .append("  ").append(w > h ? "landscape" : "portrait")
+                .append('\n');
         b.append("Use these pixel bounds for every coordinate.\n");
-        b.append("No accessibility tree, no focus, no keyboard, no text input.");
+        b.append("No accessibility tree and no focus. Use type_text to enter text;")
+                .append(" it drives a bundled input method.");
         return b.toString();
     }
 

@@ -21,34 +21,60 @@ public class Guard {
 
     public static final boolean ENABLED = true;
 
-    private static final String[] DANGER = new String[]{
+    private static final String[] HARD = new String[]{
             "卸载", "删除", "清除数据", "清除所有", "格式化", "恢复出厂", "重置",
             "支付", "付款", "转账", "确认支付", "确认付款", "购买", "订阅",
             "退款", "充值", "提现", "绑定银行卡", "解绑",
             "注销", "退出登录", "删除账号", "关闭账号",
             "强制停止", "停止运行", "结束进程",
-            "授权", "允许", "同意并", "确认安装", "安装",
-            "覆盖安装", "降级安装", "清除缓存", "清理全部",
-            "停用", "禁用", "卸载更新"
+            "确认安装", "覆盖安装", "降级安装", "卸载更新"
+    };
+
+    private static final String[] SOFT = new String[]{
+            "授权", "允许", "同意并", "安装", "清除缓存", "清理全部", "停用", "禁用"
     };
 
     public static String hit(String text) {
         if (!ENABLED) {
             return null;
         }
-        if (text == null) {
-            return null;
+        String h = hitHard(text);
+        if (h != null) {
+            return h;
         }
-        String t = text.trim();
+        String t = clean(text);
         if (t.length() == 0) {
             return null;
         }
-        for (int i = 0; i < DANGER.length; i++) {
-            if (t.contains(DANGER[i])) {
-                return DANGER[i];
+        for (int i = 0; i < SOFT.length; i++) {
+            if (t.contains(SOFT[i])) {
+                return SOFT[i];
             }
         }
         return null;
+    }
+
+    public static String hitHard(String text) {
+        if (!ENABLED) {
+            return null;
+        }
+        String t = clean(text);
+        if (t.length() == 0) {
+            return null;
+        }
+        for (int i = 0; i < HARD.length; i++) {
+            if (t.contains(HARD[i])) {
+                return HARD[i];
+            }
+        }
+        return null;
+    }
+
+    private static String clean(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.trim();
     }
 
     public static String blocked(String word, String detail) {
@@ -60,8 +86,9 @@ public class Guard {
         b.append("target: ").append(detail).append('\n');
         b.append("hint: this action may lose data or money, so it was refused. ")
                 .append("if it is really needed, ask the user to do it by hand on the phone.\n");
-        b.append("do_not_retry: do not retry the same intent via click_text, raw coordinates, ")
-                .append("confirm_risk or by expanding a menu first.\n");
+        b.append("do_not_retry: do not retry the same intent via click_text, raw ")
+                .append("coordinates or by expanding a menu first. if the user really wants ")
+                .append("it, ask them to confirm, then pass confirm_risk true once.\n");
         return b.toString();
     }
 }

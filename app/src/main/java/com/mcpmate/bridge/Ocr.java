@@ -172,23 +172,15 @@ public class Ocr {
             }
             String t = ln.text;
             int vis = 0;
-            int ascii = 0;
             for (int i = 0; i < t.length(); i++) {
-                char ch = t.charAt(i);
-                if (ch > ' ') {
+                if (t.charAt(i) > ' ') {
                     vis++;
-                    if (ch < 128) {
-                        ascii++;
-                    }
                 }
             }
             if (vis < 1) {
                 continue;
             }
             if (vis <= 2 && h < 26) {
-                continue;
-            }
-            if (vis >= 4 && ascii == vis && t.length() <= 3) {
                 continue;
             }
             keep.add(ln);

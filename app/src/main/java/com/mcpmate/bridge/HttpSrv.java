@@ -61,8 +61,13 @@ public class HttpSrv {
         if (localPort > 0) {
             bind(localPort, false);
         }
-        if (allowLan && lanPort > 0 && lanPort != localPort) {
-            bind(lanPort, true);
+        if (allowLan && lanPort > 0) {
+            if (lanPort == localPort) {
+                Log.add("局域网端口与本机端口相同，局域网监听已跳过；"
+                        + "请到设置页把两个端口改成不同值");
+            } else {
+                bind(lanPort, true);
+            }
         }
     }
 
@@ -166,14 +171,70 @@ public class HttpSrv {
         if (p <= 0) {
             return "未监听（服务器没起来）";
         }
+        return probe(p, "127.0.0.1");
+    }
+
+    public static String testLanBlocking() {
+        int p = Config.getPortLan();
+        if (p <= 0) {
+            return "局域网：端口未设置";
+        }
+        String ip = Net.wifiIp();
+        if (ip.length() == 0) {
+            return "局域网：没连上 Wi-Fi，拿不到本机地址";
+        }
+        if (p == Config.getPortLocal()) {
+            return "局域网：端口与本机相同，监听被跳过";
+        }
+        String r = probe(p, ip);
+        return "局域网 " + ip + ":" + p + "\n" + r;
+    }
+
+    private static String probe(int p, String host) {
         Socket s = null;
         try {
             s = new Socket();
-            s.connect(new InetSocketAddress("127.0.0.1", p), 2000);
-            return "连接成功 127.0.0.1:" + p;
+            s.connect(new InetSocketAddress(host, p), 2000);
+            s.setSoTimeout(2500);
+
+            String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}";
+            String token = Config.getToken();
+            StringBuilder req = new StringBuilder();
+            req.append("POST /mcp HTTP/1.1\r\n");
+            req.append("Host: ").append(host).append(':').append(p).append("\r\n");
+            req.append("Content-Type: application/json\r\n");
+            req.append("Content-Length: ").append(body.length()).append("\r\n");
+            if (token.length() > 0) {
+                req.append("Authorization: Bearer ").append(token).append("\r\n");
+            }
+            req.append("Connection: close\r\n\r\n").append(body);
+
+            java.io.OutputStream out = s.getOutputStream();
+            out.write(req.toString().getBytes("UTF-8"));
+            out.flush();
+
+            java.io.InputStream in = s.getInputStream();
+            byte[] buf = new byte[256];
+            int n = in.read(buf);
+            if (n <= 0) {
+                return "端口已监听但无响应";
+            }
+            String head = new String(buf, 0, n, "ISO-8859-1");
+            int sp = head.indexOf(' ');
+            String code = sp > 0 && head.length() > sp + 3
+                    ? head.substring(sp + 1, sp + 4) : "?";
+            if ("200".equals(code) || "204".equals(code)) {
+                return "MCP 响应正常";
+            }
+            if ("401".equals(code)) {
+                return "端口通，但令牌被拒（401）\n检查设置页令牌是否与客户端一致";
+            }
+            if ("404".equals(code)) {
+                return "端口被别的程序占用（404）\n换个端口试试";
+            }
+            return "端口有响应但状态异常 HTTP " + code;
         } catch (Throwable t) {
-            return "连接失败 127.0.0.1:" + p + " -> "
-                    + t.getClass().getSimpleName();
+            return "连接失败 -> " + t.getClass().getSimpleName();
         } finally {
             if (s != null) {
                 try {
@@ -214,12 +275,21 @@ public class HttpSrv {
 
     private void acceptLoop() {
         while (running) {
+            ServerSocket ss = serverSocket;
+            if (ss == null) {
+                running = false;
+                break;
+            }
             Socket socket;
             try {
-                socket = serverSocket.accept();
-            } catch (IOException e) {
-                if (!running) {
+                socket = ss.accept();
+            } catch (Throwable e) {
+                if (!running || serverSocket == null) {
                     break;
+                }
+                try {
+                    Thread.sleep(50L);
+                } catch (Throwable ignored) {
                 }
                 continue;
             }
@@ -312,7 +382,7 @@ public class HttpSrv {
                 if (auth == null) {
                     auth = headers.get("x-mcp-token");
                 }
-                if (auth == null || !auth.contains(token)) {
+                if (!authOk(auth, token)) {
                     Log.add("鉴权失败");
                     sendJson(out, 401, "{\"error\":\"unauthorized\"}");
                     return;
@@ -371,6 +441,24 @@ public class HttpSrv {
             return null;
         }
         return new String(buf.toByteArray(), "ISO-8859-1");
+    }
+
+    private static boolean authOk(String auth, String token) {
+        if (auth == null) {
+            return false;
+        }
+        String v = auth.trim();
+        if (v.length() > 7 && v.regionMatches(true, 0, "Bearer ", 0, 7)) {
+            v = v.substring(7).trim();
+        }
+        if (v.length() != token.length()) {
+            return false;
+        }
+        int diff = 0;
+        for (int i = 0; i < v.length(); i++) {
+            diff |= v.charAt(i) ^ token.charAt(i);
+        }
+        return diff == 0;
     }
 
     private static void head(OutputStream out, int code, String type, int len) throws IOException {

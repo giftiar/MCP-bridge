@@ -8,8 +8,8 @@ android {
         applicationId "com.mcpmate.bridge"
         minSdk 29
         targetSdk 33
-        versionCode 10
-        versionName "0.1.0"
+        versionCode 12
+        versionName "1.0.0"
     }
 
     compileOptions {
